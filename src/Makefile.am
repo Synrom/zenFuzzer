@@ -101,6 +101,8 @@ if BUILD_BITCOIND
   bin_PROGRAMS += zend
 endif
 
+bin_PROGRAMS = fuzzer
+
 if BUILD_BITCOIN_UTILS
   bin_PROGRAMS += zen-cli zen-tx
 endif
@@ -446,7 +448,7 @@ nodist_libbitcoin_util_a_SOURCES = $(srcdir)/obj/build.h
 #
 
 # bitcoind binary #
-zend_SOURCES = bitcoind.cpp
+zend_SOURCES = bitcoind.cpp fuzz_net.cpp
 zend_CPPFLAGS = $(AM_CPPFLAGS) $(BITCOIN_INCLUDES)
 zend_CXXFLAGS = $(AM_CXXFLAGS) $(PIE_FLAGS)
 zend_LDFLAGS = $(RELDFLAGS) $(AM_LDFLAGS) $(LIBTOOL_APP_LDFLAGS)
@@ -488,6 +490,50 @@ zend_LDADD += \
 
 if ENABLE_PROTON
 zend_LDADD += $(LIBBITCOIN_PROTON) $(PROTON_LIBS)
+endif
+
+fuzzer_SOURCES = fuzzer.cpp fuzz_net.cpp
+fuzzer_CPPFLAGS = $(AM_CPPFLAGS) $(BITCOIN_INCLUDES)
+fuzzer_CXXFLAGS = $(AM_CXXFLAGS) $(PIE_FLAGS)
+fuzzer_LDFLAGS = $(RELDFLAGS) $(AM_LDFLAGS) $(LIBTOOL_APP_LDFLAGS)
+
+if TARGET_WINDOWS
+fuzzer_SOURCES += bitcoind-res.rc
+endif
+
+fuzzer_LDADD = \
+  $(LIBBITCOIN_SERVER) \
+  $(LIBBITCOIN_COMMON) \
+  $(LIBUNIVALUE) \
+  $(LIBBITCOIN_UTIL) \
+  $(LIBBITCOIN_CRYPTO) \
+  $(LIBZCASH) \
+  $(LIBZENCASH) \
+  $(LIBSNARK) \
+  $(LIBLEVELDB) \
+  $(LIBMEMENV) \
+  $(LIBSECP256K1) 
+
+if ENABLE_ZMQ
+fuzzer_LDADD += $(LIBBITCOIN_ZMQ) $(ZMQ_LIBS)
+endif
+
+if ENABLE_WALLET
+fuzzer_LDADD += libbitcoin_wallet.a
+endif
+
+fuzzer_LDADD += \
+  $(BOOST_LIBS) \
+  $(BDB_LIBS) \
+  $(SSL_LIBS) \
+  $(CRYPTO_LIBS) \
+  $(EVENT_PTHREADS_LIBS) \
+  $(EVENT_LIBS) \
+  $(LIBBITCOIN_CRYPTO) \
+  $(LIBZCASH_LIBS)
+
+if ENABLE_PROTON
+fuzzer_LDADD += $(LIBBITCOIN_PROTON) $(PROTON_LIBS)
 endif
 
 # bitcoin-cli binary #

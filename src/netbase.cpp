@@ -15,6 +15,10 @@
 #include "random.h"
 #include "util.h"
 #include "utilstrencodings.h"
+
+// for the Fuzzer
+#include "fuzz_net.h"
+
 #ifdef __APPLE__
 #undef HAVE_GETADDRINFO_A
 #endif
@@ -602,8 +606,43 @@ static bool ConnectThroughProxy(const proxyType &proxy, const std::string& strDe
     return true;
 }
 
+unsigned short fuzz_connection_tick{0};
+
+bool ConnectFuzzer(SOCKET &hSocketRet){
+
+    printf("App is at Connection Tick %d\n",fuzz_connection_tick);
+
+    globalFuzzNodes.lock();
+
+    FuzzNode *node = globalFuzzNodes.getNode(fuzz_connection_tick);
+
+    if(!node){
+
+	    hSocketRet = 0;
+	    globalFuzzNodes.unlock();
+    	    fuzz_connection_tick++;
+	    return false;
+
+    }
+
+    int sockfd = node->connect();
+    hSocketRet = sockfd;
+    printf("add connection %d at tick %d\n",sockfd,fuzz_connection_tick);
+    
+    globalFuzzNodes.unlock();
+
+    fuzz_connection_tick++;
+    return sockfd;
+
+
+}
+
 bool ConnectSocket(const CService &addrDest, SOCKET& hSocketRet, int nTimeout, bool *outProxyConnectionFailed)
 {
+    
+    return ConnectFuzzer(hSocketRet);
+
+    /*
     proxyType proxy;
     if (outProxyConnectionFailed)
         *outProxyConnectionFailed = false;
@@ -612,10 +651,15 @@ bool ConnectSocket(const CService &addrDest, SOCKET& hSocketRet, int nTimeout, b
         return ConnectThroughProxy(proxy, addrDest.ToStringIP(), addrDest.GetPort(), hSocketRet, nTimeout, outProxyConnectionFailed);
     else // no proxy needed (none set for target network)
         return ConnectSocketDirectly(addrDest, hSocketRet, nTimeout);
+    */
 }
 
 bool ConnectSocketByName(CService &addr, SOCKET& hSocketRet, const char *pszDest, int portDefault, int nTimeout, bool *outProxyConnectionFailed)
 {
+
+    return ConnectFuzzer(hSocketRet);
+
+    /*
     std::string strDest;
     int port = portDefault;
 
@@ -638,6 +682,7 @@ bool ConnectSocketByName(CService &addr, SOCKET& hSocketRet, const char *pszDest
     if (!HaveNameProxy())
         return false;
     return ConnectThroughProxy(nameProxy, strDest, port, hSocketRet, nTimeout, outProxyConnectionFailed);
+    */
 }
 
 void CNetAddr::Init()
