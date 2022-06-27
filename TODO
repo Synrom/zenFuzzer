@@ -1,0 +1,5 @@
+ProcessMessage
+
+CNetMessage:
+	hdr <24 Byte Header> (Params().MessageStart(), strCommand, hash, size)
+	vRecv <the data>

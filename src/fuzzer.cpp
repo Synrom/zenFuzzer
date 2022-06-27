@@ -1,5 +1,7 @@
+#include "noui.h"
 #include <cstdint>
 #include <stdio.h>
+#include <exception>
 #include <fstream>
 #include <sstream>
 #include <vector>
@@ -108,10 +110,30 @@ void fuzz_data(const char *data, unsigned int size){
 	FuzzNodes &Connections = dataReader.ConsumeConnections();
 
 	printf("start node\n");
-	StartNode(thread_group, scheduler);
 
-	while(1){
+	SetupEnvironment();
+	noui_connect();
+
+	const char *argv[] = {"zend"};
+
+	ParseParameters(1, argv);
+
+	try
+	{
+	ReadConfigFile(mapArgs, mapMultiArgs);
+	}catch(const std::exception &e){
+		printf("cant open the conf file\n");
+		return;
 	}
+
+	if(!SelectParamsFromCommandLine()){
+		printf("SelectParamsFromCommandLine failed\n");
+		return;
+	}
+
+	SoftSetBoolArg("-server", true);
+
+	AppInit2(thread_group, scheduler);
 
 }
 
