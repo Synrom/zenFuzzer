@@ -1,4 +1,4 @@
-ProcessMessage
+AppInit2
 
 CNetMessage:
 	hdr <24 Byte Header> (Params().MessageStart(), strCommand, hash, size)

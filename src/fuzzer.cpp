@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <exception>
 #include <fstream>
+#include <iostream>
 #include <sstream>
 #include <vector>
 #if defined(HAVE_CONFIG_H)
@@ -97,6 +98,54 @@
 
 #include "fuzz_net.h"
 
+
+void WaitForShutdown(boost::thread_group* threadGroup)
+{
+    bool fShutdown = ShutdownRequested();
+    // Tell the main threads to shutdown.
+    while (!fShutdown)
+    {
+        MilliSleep(200);
+        fShutdown = ShutdownRequested();
+    }
+    if (threadGroup)
+    {
+        Interrupt(*threadGroup);
+        threadGroup->join_all();
+    }
+}
+
+bool AppInit(int argc, const char* argv[])
+{
+    boost::thread_group threadGroup;
+    CScheduler scheduler;
+
+    bool fRet = false;
+
+    ParseParameters(argc, argv);
+
+    try
+    {
+        // Check for -testnet or -regtest parameter (Params() calls are only valid after this clause)
+        if (!SelectParamsFromCommandLine()) {
+            fprintf(stderr, "Error: Invalid combination of -regtest and -testnet.\n");
+            return false;
+        }
+
+        SoftSetBoolArg("-server", true);
+
+        fRet = AppInit2(threadGroup, scheduler);
+    }
+    catch (const std::exception& e) {
+        PrintExceptionContinue(&e, "AppInit()");
+    } catch (...) {
+        PrintExceptionContinue(NULL, "AppInit()");
+    }
+
+    return fRet;
+
+
+}
 // <number of COnnections><tick for connection>...<<connection choose><msg>>....
 
 void fuzz_data(const char *data, unsigned int size){
@@ -116,24 +165,7 @@ void fuzz_data(const char *data, unsigned int size){
 
 	const char *argv[] = {"zend"};
 
-	ParseParameters(1, argv);
-
-	try
-	{
-	ReadConfigFile(mapArgs, mapMultiArgs);
-	}catch(const std::exception &e){
-		printf("cant open the conf file\n");
-		return;
-	}
-
-	if(!SelectParamsFromCommandLine()){
-		printf("SelectParamsFromCommandLine failed\n");
-		return;
-	}
-
-	SoftSetBoolArg("-server", true);
-
-	AppInit2(thread_group, scheduler);
+	AppInit(1, argv);
 
 }
 

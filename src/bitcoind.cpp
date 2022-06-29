@@ -59,7 +59,7 @@ void WaitForShutdown(boost::thread_group* threadGroup)
 //
 // Start
 //
-bool AppInit(int argc, char* argv[])
+bool AppInit(int argc, const char* argv[])
 {
     boost::thread_group threadGroup;
     CScheduler scheduler;
@@ -73,6 +73,7 @@ bool AppInit(int argc, char* argv[])
     ParseParameters(argc, argv);
 
     // Process help and version before taking care about datadir
+    /*
     if (mapArgs.count("-?") || mapArgs.count("-h") ||  mapArgs.count("-help") || mapArgs.count("-version"))
     {
         std::string strUsage = _("Zen Daemon") + " " + _("version") + " " + FormatFullVersion() + "\n";
@@ -92,6 +93,12 @@ bool AppInit(int argc, char* argv[])
         fprintf(stdout, "%s", strUsage.c_str());
         return false;
     }
+    */
+
+    printf("data dir ist %s\n", GetDataDir(false).c_str());
+    printf("config file is %s\n",GetConfigFile().c_str());
+    fflush(stdout);
+    return true;
 
     try
     {
