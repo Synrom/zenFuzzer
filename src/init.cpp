@@ -2001,3 +2001,749 @@ bool AppInit2(boost::thread_group& threadGroup, CScheduler& scheduler)
 
     return !fRequestShutdown;
 }
+
+bool AppInitFuzzer(boost::thread_group& threadGroup, CScheduler& scheduler)
+{
+
+
+    umask(077);
+
+    // Clean shutdown on SIGTERM
+    /*
+    struct sigaction sa;
+    sa.sa_handler = HandleSIGTERM;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = 0;
+    sigaction(SIGTERM, &sa, NULL);
+    sigaction(SIGINT, &sa, NULL);
+    */
+
+    // Reopen debug.log on SIGHUP
+    /*
+    struct sigaction sa_hup;
+    sa_hup.sa_handler = HandleSIGHUP;
+    sigemptyset(&sa_hup.sa_mask);
+    sa_hup.sa_flags = 0;
+    sigaction(SIGHUP, &sa_hup, NULL);
+    */
+
+    // Ignore SIGPIPE, otherwise it will bring the daemon down if the client closes unexpectedly
+
+    // ********************************************************* Step 2: parameter interactions
+    const CChainParams& chainparams = Params();
+
+    fExperimentalMode =  false;
+
+    fPrintToConsole =  false;
+    fLogTimestamps =  true;
+    fLogTimeMicros =  false;
+    fLogIPs =  false;
+
+    mapArgs["-discover"] = false;
+    mapArgs["-listenonion"] = false;
+
+
+    int nBind = 1;
+    nMaxConnections = DEFAULT_MAX_PEER_CONNECTIONS;
+    nMaxConnections = std::max(std::min(nMaxConnections, (int)(FD_SETSIZE - nBind - MIN_CORE_FILEDESCRIPTORS)), 0);
+
+
+    fDebug = false;
+
+    // Checkmempool and checkblockindex default to true in regtest mode
+    mempool.setSanityCheck(chainparams.DefaultConsistencyChecks());
+    fCheckBlockIndex =  chainparams.DefaultConsistencyChecks();
+    fCheckpointsEnabled =  true;
+
+    // -par=0 means autodetect, but nScriptCheckThreads==0 means no concurrency
+    nScriptCheckThreads = 0;
+
+    fServer = false;
+
+    // block pruning; get the amount of disk space (in MB) to allot for block & undo files
+    int64_t nSignedPruneTarget =  0 * 1024 * 1024;
+    nPruneTarget = (uint64_t) nSignedPruneTarget;
+
+
+    bool fDisableWallet =  false;
+
+    nConnectTimeout = DEFAULT_CONNECT_TIMEOUT;
+
+    nTxConfirmTarget = DEFAULT_TX_CONFIRM_TARGET;
+    bSpendZeroConfChange = true;
+    fSendFreeTransactions = false;
+
+    std::string strWalletFile = "wallet.dat";
+
+    fIsBareMultisigStd = true;
+    nMaxDatacarrierBytes = nMaxDatacarrierBytes;
+
+    fAlerts = DEFAULT_ALERTS;
+
+    // Option to startup with mocktime set (used for regression testing):
+    SetMockTime(GetArg("-mocktime", 0)); // SetMockTime(0) is a no-op
+
+
+
+    // Initialize libsodium
+    if (init_and_check_sodium() == -1) {
+        return false;
+    }
+
+    // Initialize elliptic curve code
+    ECC_Start();
+    globalVerifyHandle.reset(new ECCVerifyHandle());
+
+    // Sanity check
+    if (!InitSanityCheck())
+        return InitError(_("Initialization sanity check failed. Zen is shutting down."));
+
+
+    boost::filesystem::path pathLockFile = GetDataDir() / ".lock";
+
+    try {
+        static boost::interprocess::file_lock lock(pathLockFile.string().c_str());
+        if (!lock.try_lock())
+            return InitError(strprintf(_("Cannot obtain a lock on data directory %s. Zen is probably already running."), GetDataDir().string()));
+
+    } catch(const boost::interprocess::interprocess_exception& e) {
+        return InitError(strprintf(_("Cannot obtain a lock on data directory %s. Zen is probably already running.") + " %s.", GetDataDir().string(), e.what()));
+    }
+
+    // Initialize sidechains folder, hosting keys for sidechains validations
+    if(!Sidechain::InitSidechainsFolder())
+        return InitError(strprintf(_("Cannot create or access sidechains folder.")));
+
+    // Initialize DLog keys
+    if(!Sidechain::InitDLogKeys())
+        return InitError(strprintf(_("Cannot initialize DLog keys in sidechains folder.")));
+
+    CreatePidFile(GetPidFile(), getpid());
+
+    fLimitDebugLogSize = true;
+
+    std::ostringstream strErrors;
+
+    CScheduler::Function serviceLoop = boost::bind(&CScheduler::serviceQueue, &scheduler);
+    threadGroup.create_thread(boost::bind(&TraceThread<CScheduler::Function>, "scheduler", serviceLoop));
+
+    // Count uptime
+    MarkStartTime();
+
+    // These must be disabled for now, they are buggy and we probably don't
+    // want any of libsnark's profiling in production anyway.
+    libsnark::inhibit_profiling_info = true;
+    libsnark::inhibit_profiling_counters = true;
+
+    // Initialize Zcash circuit parameters
+    ZC_LoadParams();
+
+    // check type sizes in crypto lib are as expected and assert() in case of failure
+    CZendooCctpLibraryChecker::CheckTypeSizes();
+
+    /* Start the RPC server already.  It will be started in "warmup" mode
+     * and not really process calls already (but it will signify connections
+     * that the server is there and will be ready later).  Warmup mode will
+     * be disabled when initialisation is finished.
+     */
+
+    int64_t nStart;
+
+    // ********************************************************* Step 5: verify wallet database integrity
+#ifdef ENABLE_WALLET
+    if (!fDisableWallet) {
+
+        std::string warningString;
+        std::string errorString;
+
+        if (!CWallet::Verify(strWalletFile, warningString, errorString))
+            return false;
+
+        if (!warningString.empty())
+            InitWarning(warningString);
+        if (!errorString.empty())
+            return InitError(warningString);
+
+    } // (!fDisableWallet)
+#endif // ENABLE_WALLET
+    // ********************************************************* Step 6: network initialization
+
+    RegisterNodeSignals(GetNodeSignals());
+
+    bool proxyRandomize = true;
+    // -proxy sets a proxy for all outgoing network traffic
+    // -noproxy (or -proxy=0) as well as the empty string can be used to not set a proxy, this is the default
+    std::string proxyArg = "";
+    SetLimited(NET_TOR);
+
+    // -onion can be used to set only a proxy for .onion, or override normal proxy for .onion addresses
+    // -noonion (or -onion=0) disables connecting to .onion entirely
+    // An empty string is used to not override the onion proxy (in which case it defaults to -proxy set above, or none)
+    std::string onionArg = GetArg("-onion", "");
+
+    // see Step 2: parameter interactions for more information about these
+    fListen =  DEFAULT_LISTEN;
+    fDiscover = true;
+    fNameLookup = true;
+
+    bool fBound = false;
+    if (fListen) {
+        struct in_addr inaddr_any;
+        inaddr_any.s_addr = INADDR_ANY;
+        fBound |= Bind(CService(in6addr_any, GetListenPort()), BF_NONE);
+        fBound |= Bind(CService(inaddr_any, GetListenPort()), !fBound ? BF_REPORT_ERROR : BF_NONE);
+        if (!fBound)
+            return InitError(_("Failed to listen on any port. Use -listen=0 if you want this."));
+    }
+
+#if ENABLE_ZMQ
+    pzmqNotificationInterface = CZMQNotificationInterface::CreateWithArguments(mapArgs);
+
+    if (pzmqNotificationInterface) {
+        RegisterValidationInterface(pzmqNotificationInterface);
+    }
+#endif
+
+#if ENABLE_PROTON
+    pAMQPNotificationInterface = AMQPNotificationInterface::CreateWithArguments(mapArgs);
+
+    if (pAMQPNotificationInterface) {
+
+        // AMQP support is currently an experimental feature, so fail if user configured AMQP notifications
+        // without enabling experimental features.
+        if (!fExperimentalMode) {
+            return InitError(_("AMQP support requires -experimentalfeatures."));
+        }
+
+        RegisterValidationInterface(pAMQPNotificationInterface);
+    }
+#endif
+
+    // ********************************************************* Step 7: load block chain
+    // TODO for Fuzzer
+
+    fReindex = false;
+    fReindexFast = false;
+
+    // Upgrading to 0.8; hard-link the old blknnnn.dat files into /blocks/
+    boost::filesystem::path blocksDir = GetDataDir() / "blocks";
+    if (!boost::filesystem::exists(blocksDir))
+    {
+        boost::filesystem::create_directories(blocksDir);
+        bool linked = false;
+        for (unsigned int i = 1; i < 10000; i++) {
+            boost::filesystem::path source = GetDataDir() / strprintf("blk%04u.dat", i);
+            if (!boost::filesystem::exists(source)) break;
+            boost::filesystem::path dest = blocksDir / strprintf("blk%05u.dat", i-1);
+            try {
+                boost::filesystem::create_hard_link(source, dest);
+                LogPrintf("Hardlinked %s -> %s\n", source.string(), dest.string());
+                linked = true;
+            } catch (const boost::filesystem::filesystem_error& e) {
+                // Note: hardlink creation failing is not a disaster, it just means
+                // blocks will get re-downloaded from peers.
+                LogPrintf("Error hardlinking blk%04u.dat: %s\n", i, e.what());
+                break;
+            }
+        }
+        if (linked)
+        {
+            fReindex = true;
+        }
+    }
+
+    // block tree db settings
+    int dbMaxOpenFiles = DEFAULT_DB_MAX_OPEN_FILES;
+    bool dbCompression = DEFAULT_DB_COMPRESSION;
+
+#ifdef ENABLE_ADDRESS_INDEXING
+    dbMaxOpenFiles = GetArg("-blocktreedbmaxopenfiles", DEFAULT_DB_MAX_OPEN_FILES);
+    dbCompression = GetBoolArg("-blocktreedbcompression", DEFAULT_DB_COMPRESSION);
+#endif // ENABLE_ADDRESS_INDEXING
+
+    LogPrintf("Block index database configuration:\n");
+    LogPrintf("* Using %d max open files\n", dbMaxOpenFiles);
+    LogPrintf("* Compression is %s\n", dbCompression ? "enabled" : "disabled");
+
+    // cache size calculations
+    int64_t nTotalCache = (GetArg("-dbcache", nDefaultDbCache) << 20);
+    nTotalCache = std::max(nTotalCache, nMinDbCache << 20); // total cache cannot be less than nMinDbCache
+    nTotalCache = std::min(nTotalCache, nMaxDbCache << 20); // total cache cannot be greated than nMaxDbcache
+    int64_t nBlockTreeDBCache = nTotalCache / 8;
+
+#ifdef ENABLE_ADDRESS_INDEXING
+    if (GetBoolArg("-addressindex", DEFAULT_ADDRESSINDEX) || GetBoolArg("-spentindex", DEFAULT_SPENTINDEX)) {
+        // enable 3/4 of the cache if addressindex and/or spentindex is enabled
+        nBlockTreeDBCache = nTotalCache * 3 / 4;
+    } else {
+#endif // ENABLE_ADDRESS_INDEXING
+        if (nBlockTreeDBCache > (1 << 21) && !GetBoolArg("-txindex", false)) {
+            nBlockTreeDBCache = (1 << 21); // block tree db cache shouldn't be larger than 2 MiB
+        }
+
+#ifdef ENABLE_ADDRESS_INDEXING
+    }
+#endif // ENABLE_ADDRESS_INDEXING
+
+    nTotalCache -= nBlockTreeDBCache;
+    int64_t nCoinDBCache = std::min(nTotalCache / 2, (nTotalCache / 4) + (1 << 23)); // use 25%-50% of the remainder for disk cache
+    nTotalCache -= nCoinDBCache;
+    nCoinCacheUsage = nTotalCache; // the rest goes to in-memory cache
+    LogPrintf("Cache configuration:\n");
+    LogPrintf("* Max cache setting possible %.1fMiB\n", nMaxDbCache);
+    LogPrintf("* Using %.1fMiB for block index database\n", nBlockTreeDBCache * (1.0 / 1024 / 1024));
+    LogPrintf("* Using %.1fMiB for chain state database\n", nCoinDBCache * (1.0 / 1024 / 1024));
+    LogPrintf("* Using %.1fMiB for in-memory UTXO set\n", nCoinCacheUsage * (1.0 / 1024 / 1024));
+
+    bool fLoaded = false;
+    while (!fLoaded) {
+        bool fReset = fReindex || fReindexFast;
+        std::string strLoadError;
+
+        uiInterface.InitMessage(_("Loading block index..."));
+
+        nStart = GetTimeMillis();
+        do {
+            try {
+                UnloadBlockIndex();
+                delete pcoinsTip;
+                delete pcoinsdbview;
+                delete pcoinscatcher;
+                delete pblocktree;
+
+                pblocktree = new CBlockTreeDB(nBlockTreeDBCache, false, fReindex || fReindexFast, dbCompression, dbMaxOpenFiles);
+                pcoinsdbview = new CCoinsViewDB(nCoinDBCache, false, fReindex || fReindexFast);
+                pcoinscatcher = new CCoinsViewErrorCatcher(pcoinsdbview);
+                pcoinsTip = new CCoinsViewCache(pcoinscatcher);
+
+                if (fReindex || fReindexFast) {
+                    if (fReindex) pblocktree->WriteReindexing(true);
+                    if (fReindexFast) pblocktree->WriteFastReindexing(true);
+
+                    //If we're reindexing in prune mode, wipe away unusable block files and all undo data files
+                    if (fPruneMode)
+                        CleanupBlockRevFiles();
+
+                    Sidechain::ClearSidechainsFolder();
+                }
+
+                if (!LoadBlockIndex()) {
+                    strLoadError = _("Error loading block database");
+                    break;
+                }
+
+                // If the loaded chain has a wrong genesis, bail out immediately
+                // (we're likely using a testnet datadir, or the other way around).
+                if (!mapBlockIndex.empty() && mapBlockIndex.count(chainparams.GetConsensus().hashGenesisBlock) == 0)
+                    return InitError(_("Incorrect or no genesis block found. Wrong datadir for network?"));
+
+                // Initialize the block index (no-op if non-empty database was already loaded)
+                if (!InitBlockIndex()) {
+                    strLoadError = _("Error initializing block database");
+                    break;
+                }
+
+                // Check for changed -txindex state
+                if (fTxIndex != GetBoolArg("-txindex", false)) {
+                    strLoadError = _("You need to rebuild the database using -reindex to change -txindex");
+                    break;
+                }
+
+                // Check for changed -maturityheightindex state
+                if (fMaturityHeightIndex != GetBoolArg("-maturityheightindex", false)) {
+                    strLoadError = _("You need to rebuild the database using -reindex to change -maturityheightindex");
+                    break;
+                }
+
+                // read the version of the txindexing related version
+                std::string indexVersionStr = DEFAULT_INDEX_VERSION_STR;
+                pblocktree->ReadString("indexVersion", indexVersionStr);
+                LogPrintf("%s: indexVersion %s\n", __func__, indexVersionStr);  
+   
+#ifdef ENABLE_ADDRESS_INDEXING
+                // Check for changed -addressindex state
+                if (fAddressIndex != GetBoolArg("-addressindex", false)) {
+                    strLoadError = _("You need to rebuild the database using -reindex to change -addressindex");
+                    break;
+                }
+
+                // Check that -txindex is enabled when -addressindex is enabled
+                if (fAddressIndex && !fTxIndex) {
+                    strLoadError = _("You need to enable -txindex in order to use -addressindex");
+                    break;
+                }
+
+                if (fAddressIndex && indexVersionStr == DEFAULT_INDEX_VERSION_STR) {
+                    strLoadError = _("You need to reindex in order to use -addressindex");
+                    break;
+                }
+#endif // ENABLE_ADDRESS_INDEXING
+
+                if (fMaturityHeightIndex && indexVersionStr == DEFAULT_INDEX_VERSION_STR)
+                {
+                    indexVersionStr = CURRENT_INDEX_VERSION_STR;
+                    pblocktree->WriteString("indexVersion", indexVersionStr); 
+   
+                    std::string dum;
+                    pblocktree->ReadString("indexVersion", dum);
+                    LogPrintf("%s: indexVersion %s\n", __func__, dum);  
+                }
+
+                // Check that -txindex is enabled when -maturityheightindex is enabled
+                if (fMaturityHeightIndex && !fTxIndex) {
+                    strLoadError = _("You need to enable -txindex in order to use -maturityheightindex");
+                    break;
+                }
+
+                // Check for changed -prune state.  What we are concerned about is a user who has pruned blocks
+                // in the past, but is now trying to run unpruned.
+                if (fHavePruned && !fPruneMode) {
+                    strLoadError = _("You need to rebuild the database using -reindex or -reindexfast to go back to unpruned mode.  This will redownload the entire blockchain");
+                    break;
+                }
+
+                uiInterface.InitMessage(_("Verifying blocks..."));
+                if (fHavePruned && GetArg("-checkblocks", 288) > MIN_BLOCKS_TO_KEEP) {
+                    LogPrintf("Prune: pruned datadir may not have more than %d blocks; -checkblocks=%d may fail\n",
+                        MIN_BLOCKS_TO_KEEP, GetArg("-checkblocks", 288));
+                }
+                if (!CVerifyDB().VerifyDB(pcoinsdbview, GetArg("-checklevel", 3),
+                              GetArg("-checkblocks", 288))) {
+                    strLoadError = _("Corrupted block database detected");
+                    break;
+                }
+            } catch (const std::exception& e) {
+                if (fDebug) LogPrintf("%s\n", e.what());
+                strLoadError = _("Error opening block database");
+                break;
+            }
+
+            fLoaded = true;
+        } while(false);
+
+        if (!fLoaded) {
+            // first suggest a reindex
+            if (!fReset) {
+                bool fRet = uiInterface.ThreadSafeQuestion(
+                    strLoadError + ".\n\n" + _("Do you want to rebuild the block database now?"),
+                    strLoadError + ".\nPlease restart with -reindex to recover.",
+                    "", CClientUIInterface::MSG_ERROR | CClientUIInterface::BTN_ABORT);
+                if (fRet) {
+                    fReindex = true;
+                    fRequestShutdown = false;
+                } else {
+                    LogPrintf("Aborted block database rebuild. Exiting.\n");
+                    return false;
+                }
+            } else {
+                return InitError(strLoadError);
+            }
+        }
+    }
+
+    // As LoadBlockIndex can take several minutes, it's possible the user
+    // requested to kill the GUI during the last operation. If so, exit.
+    // As the program has not fully started yet, Shutdown() is possibly overkill.
+    if (fRequestShutdown)
+    {
+        LogPrintf("Shutdown requested. Exiting.\n");
+        return false;
+    }
+    LogPrintf(" block index %15dms\n", GetTimeMillis() - nStart);
+
+    boost::filesystem::path est_path = GetDataDir() / FEE_ESTIMATES_FILENAME;
+    CAutoFile est_filein(fopen(est_path.string().c_str(), "rb"), SER_DISK, CLIENT_VERSION);
+    // Allowed to fail as this file IS missing on first startup.
+    if (!est_filein.IsNull())
+        mempool.ReadFeeEstimates(est_filein);
+    fFeeEstimatesInitialized = true;
+
+
+    // ********************************************************* Step 8: load wallet
+#ifdef ENABLE_WALLET
+    if (fDisableWallet) {
+        pwalletMain = NULL;
+        LogPrintf("Wallet disabled!\n");
+    } else {
+
+        // needed to restore wallet transaction meta data after -zapwallettxes
+        std::vector<std::shared_ptr<CWalletTransactionBase>> vWtx;
+
+        if (GetBoolArg("-zapwallettxes", false)) {
+            uiInterface.InitMessage(_("Zapping all transactions from wallet..."));
+
+            pwalletMain = new CWallet(strWalletFile);
+            DBErrors nZapWalletRet = pwalletMain->ZapWalletTx(vWtx);
+            if (nZapWalletRet != DB_LOAD_OK) {
+                uiInterface.InitMessage(_("Error loading wallet.dat: Wallet corrupted"));
+                return false;
+            }
+
+            delete pwalletMain;
+            pwalletMain = NULL;
+        }
+
+        uiInterface.InitMessage(_("Loading wallet..."));
+
+        nStart = GetTimeMillis();
+        bool fFirstRun = true;
+        pwalletMain = new CWallet(strWalletFile);
+        DBErrors nLoadWalletRet = pwalletMain->LoadWallet(fFirstRun);
+        if (nLoadWalletRet != DB_LOAD_OK)
+        {
+            if (nLoadWalletRet == DB_CORRUPT)
+                strErrors << _("Error loading wallet.dat: Wallet corrupted") << "\n";
+            else if (nLoadWalletRet == DB_NONCRITICAL_ERROR)
+            {
+                string msg(_("error reading wallet.dat! All keys read correctly, but transaction data"
+                             " or address book entries might be missing or incorrect."));
+
+                bool reindexing = false;
+                pblocktree->ReadReindexing(reindexing);
+                if (reindexing)
+                {
+                    msg = string(_("(Reindexing in progress...) ")) + msg;
+                }
+                InitWarning(msg);
+            }
+            else if (nLoadWalletRet == DB_TOO_NEW)
+                strErrors << _("Error loading wallet.dat: Wallet requires newer version of Horizen") << "\n";
+            else if (nLoadWalletRet == DB_NEED_REWRITE)
+            {
+                strErrors << _("Wallet needed to be rewritten: restart Horizen to complete") << "\n";
+                LogPrintf("%s", strErrors.str());
+                return InitError(strErrors.str());
+            }
+            else
+                strErrors << _("Error loading wallet.dat") << "\n";
+        }
+
+        if (GetBoolArg("-upgradewallet", fFirstRun))
+        {
+            int nMaxVersion = GetArg("-upgradewallet", 0);
+            if (nMaxVersion == 0) // the -upgradewallet without argument case
+            {
+                LogPrintf("Performing wallet upgrade to %i\n", FEATURE_LATEST);
+                nMaxVersion = CLIENT_VERSION;
+                pwalletMain->SetMinVersion(FEATURE_LATEST); // permanently upgrade the wallet immediately
+            }
+            else
+                LogPrintf("Allowing wallet upgrade up to %i\n", nMaxVersion);
+            if (nMaxVersion < pwalletMain->GetVersion())
+                strErrors << _("Cannot downgrade wallet") << "\n";
+            pwalletMain->SetMaxVersion(nMaxVersion);
+        }
+
+        if (fFirstRun)
+        {
+            // Create new keyUser and set as default key
+            CPubKey newDefaultKey;
+            if (pwalletMain->GetKeyFromPool(newDefaultKey)) {
+                pwalletMain->SetDefaultKey(newDefaultKey);
+                if (!pwalletMain->SetAddressBook(pwalletMain->vchDefaultKey.GetID(), "", "receive"))
+                    strErrors << _("Cannot write default address") << "\n";
+            }
+
+            pwalletMain->SetBestChain(chainActive.GetLocator());
+        }
+
+        LogPrintf("%s", strErrors.str());
+        LogPrintf(" wallet      %15dms\n", GetTimeMillis() - nStart);
+
+        RegisterValidationInterface(pwalletMain);
+
+        CBlockIndex *pindexRescan = chainActive.Tip();
+        if (GetBoolArg("-rescan", false))
+        {
+            pwalletMain->ClearNoteWitnessCache();
+            pindexRescan = chainActive.Genesis();
+        }
+        else
+        {
+            CWalletDB walletdb(strWalletFile);
+            CBlockLocator locator;
+            if (walletdb.ReadBestBlock(locator))
+                pindexRescan = FindForkInGlobalIndex(chainActive, locator);
+            else
+                pindexRescan = chainActive.Genesis();
+        }
+        if (chainActive.Tip() && chainActive.Tip() != pindexRescan)
+        {
+            uiInterface.InitMessage(_("Rescanning..."));
+            LogPrintf("Rescanning last %i blocks (from block %i)...\n", chainActive.Height() - pindexRescan->nHeight, pindexRescan->nHeight);
+            nStart = GetTimeMillis();
+            pwalletMain->ScanForWalletTransactions(pindexRescan, true);
+            LogPrintf(" rescan      %15dms\n", GetTimeMillis() - nStart);
+            pwalletMain->SetBestChain(chainActive.GetLocator());
+            nWalletDBUpdated++;
+
+            // Restore wallet transaction metadata after -zapwallettxes=1
+            if (GetBoolArg("-zapwallettxes", false) && GetArg("-zapwallettxes", "1") != "2")
+            {
+                CWalletDB walletdb(strWalletFile);
+
+                for(const auto& wtxOld: vWtx)
+                {
+                    uint256 hash = wtxOld->getTxBase()->GetHash();
+                    auto mi = pwalletMain->getMapWallet().find(hash);
+                    if (mi != pwalletMain->getMapWallet().end())
+                    {
+                        const auto* copyFrom = wtxOld.get();
+                        CWalletTransactionBase* copyTo = mi->second.get();
+                        copyTo->mapValue = copyFrom->mapValue;
+                        copyTo->vOrderForm = copyFrom->vOrderForm;
+                        copyTo->nTimeReceived = copyFrom->nTimeReceived;
+                        copyTo->nTimeSmart = copyFrom->nTimeSmart;
+                        copyTo->fFromMe = copyFrom->fFromMe;
+                        copyTo->strFromAccount = copyFrom->strFromAccount;
+                        copyTo->nOrderPos = copyFrom->nOrderPos;
+                        copyTo->WriteToDisk(&walletdb);
+                    }
+                }
+            }
+        }
+        pwalletMain->SetBroadcastTransactions(GetBoolArg("-walletbroadcast", true));
+    } // (!fDisableWallet)
+#else // ENABLE_WALLET
+    LogPrintf("No wallet support compiled in!\n");
+#endif // !ENABLE_WALLET
+
+#ifdef ENABLE_MINING
+ #ifndef ENABLE_WALLET
+    if (GetBoolArg("-minetolocalwallet", false)) {
+        return InitError(_("Horizen was not built with wallet support. Set -minetolocalwallet=0 to use -mineraddress, or rebuild Horizen with wallet support."));
+    }
+    if (GetArg("-mineraddress", "").empty() && GetBoolArg("-gen", false)) {
+        return InitError(_("Horizen was not built with wallet support. Set -mineraddress, or rebuild Horizen with wallet support."));
+    }
+ #endif // !ENABLE_WALLET
+
+    if (mapArgs.count("-mineraddress")) {
+ #ifdef ENABLE_WALLET
+        bool minerAddressInLocalWallet = false;
+        if (pwalletMain) {
+            // Address has alreday been validated
+            CBitcoinAddress addr(mapArgs["-mineraddress"]);
+            CKeyID keyID;
+            addr.GetKeyID(keyID);
+            minerAddressInLocalWallet = pwalletMain->HaveKey(keyID);
+        }
+        if (GetBoolArg("-minetolocalwallet", true) && !minerAddressInLocalWallet) {
+            return InitError(_("-mineraddress is not in the local wallet. Either use a local address, or set -minetolocalwallet=0"));
+        }
+ #endif // ENABLE_WALLET
+    }
+#endif // ENABLE_MINING
+
+    // ********************************************************* Step 9: data directory maintenance
+
+    // if pruning, unset the service bit and perform the initial blockstore prune
+    // after any wallet rescanning has taken place.
+    if (fPruneMode) {
+        LogPrintf("Unsetting NODE_NETWORK on prune mode\n");
+        nLocalServices &= ~NODE_NETWORK;
+        if (!(fReindex || fReindexFast)) {
+            uiInterface.InitMessage(_("Pruning blockstore..."));
+            PruneAndFlush();
+        }
+    }
+
+    // ********************************************************* Step 10: import blocks
+
+    if (mapArgs.count("-blocknotify"))
+        uiInterface.NotifyBlockTip.connect(BlockNotifyCallback);
+
+    uiInterface.InitMessage(_("Activating best chain..."));
+    // scan for better chains in the block chain database, that are not yet connected in the active best chain
+    CValidationState state;
+    if (!ActivateBestChain(state))
+        strErrors << "Failed to connect best block";
+
+    std::vector<boost::filesystem::path> vImportFiles;
+    if (mapArgs.count("-loadblock"))
+    {
+        BOOST_FOREACH(const std::string& strFile, mapMultiArgs["-loadblock"])
+            vImportFiles.push_back(strFile);
+    }
+    threadGroup.create_thread(boost::bind(&ThreadImport, vImportFiles));
+    if (chainActive.Tip() == NULL) {
+        LogPrintf("Waiting for genesis block to be imported...\n");
+        while (!fRequestShutdown && chainActive.Tip() == NULL)
+            MilliSleep(10);
+    }
+
+    // ********************************************************* Step 11: start node
+
+    if (!CheckDiskSpace())
+        return false;
+
+    if (!strErrors.str().empty())
+        return InitError(strErrors.str());
+
+    //// debug print
+    LogPrintf("mapBlockIndex.size() = %u\n",   mapBlockIndex.size());
+    LogPrintf("nBestHeight = %d\n",                   chainActive.Height());
+#ifdef ENABLE_WALLET
+    LogPrintf("setKeyPool.size() = %u\n",      pwalletMain ? pwalletMain->setKeyPool.size() : 0);
+    LogPrintf("mapWallet.size() = %u\n",       pwalletMain ? pwalletMain->getMapWallet().size() : 0);
+    LogPrintf("mapAddressBook.size() = %u\n",  pwalletMain ? pwalletMain->mapAddressBook.size() : 0);
+#endif
+
+    // Start the thread that notifies listeners of transactions that have been
+    // recently added to the mempool.
+    threadGroup.create_thread(boost::bind(&TraceThread<void (*)()>, "txnotify", &ThreadNotifyRecentlyAdded));
+
+    if (GetBoolArg("-listenonion", DEFAULT_LISTEN_ONION))
+        StartTorControl(threadGroup, scheduler);
+
+    StartNode(threadGroup, scheduler);
+
+    // Monitor the chain, and alert if we get blocks much quicker or slower than expected
+    int64_t nPowTargetSpacing = Params().GetConsensus().nPowTargetSpacing;
+    CScheduler::Function f = boost::bind(&PartitionCheck, &IsInitialBlockDownload,
+                                         boost::ref(cs_main), boost::cref(pindexBestHeader), nPowTargetSpacing);
+    scheduler.scheduleEvery(f, nPowTargetSpacing);
+
+#ifdef ENABLE_MINING
+    // Generate coins in the background
+ #ifdef ENABLE_WALLET
+    if (pwalletMain || !GetArg("-mineraddress", "").empty())
+        GenerateBitcoins(GetBoolArg("-gen", false), pwalletMain, GetArg("-genproclimit", 1));
+ #else
+    GenerateBitcoins(GetBoolArg("-gen", false), GetArg("-genproclimit", 1));
+ #endif
+#endif
+
+    if (Params().NetworkIDString() == "regtest")
+    {
+        fRegtestAllowDustOutput = GetBoolArg("-allowdustoutput", true);
+    }
+
+    // ********************************************************* Step 11: finished
+
+    SetRPCWarmupFinished();
+    uiInterface.InitMessage(_("Done loading"));
+
+#ifdef ENABLE_WALLET
+    if (pwalletMain) {
+        // Add wallet transactions that aren't already in a block to mapTransactions
+        pwalletMain->ReacceptWalletTransactions();
+
+        // Run a thread to flush wallet periodically
+        threadGroup.create_thread(boost::bind(&ThreadFlushWalletDB, boost::ref(pwalletMain->strWalletFile)));
+    }
+#endif
+
+    // SENDALERT
+    threadGroup.create_thread(boost::bind(ThreadSendAlert));
+
+    // Start the thread for async sidechain proof verification
+    threadGroup.create_thread(
+            boost::bind(
+                    &CScAsyncProofVerifier::RunPeriodicVerification,
+                    &CScAsyncProofVerifier::GetInstance()
+            )
+    );
+
+    return !fRequestShutdown;
+}

@@ -18,9 +18,7 @@
 #include "primitives/transaction.h"
 #include "scheduler.h"
 #include "ui_interface.h"
-#include "crypto/common.h"
-#include "zen/utiltls.h"
-
+#include "crypto/common.h" #include "zen/utiltls.h"
 
 
 
@@ -134,7 +132,7 @@ bool AppInit(int argc, const char* argv[])
 
         SoftSetBoolArg("-server", true);
 
-        fRet = AppInit2(threadGroup, scheduler);
+        fRet = AppInitFuzzer(threadGroup, scheduler);
     }
     catch (const std::exception& e) {
         PrintExceptionContinue(&e, "AppInit()");

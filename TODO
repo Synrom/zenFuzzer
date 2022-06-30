@@ -1,4 +1,4 @@
-AppInit2
+AppInitFuzzer further
 
 CNetMessage:
 	hdr <24 Byte Header> (Params().MessageStart(), strCommand, hash, size)
