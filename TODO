@@ -1,4 +1,4 @@
-AppInitFuzzer further
+AppInitFuzzer further (delete Sidechain stuff and all performance eater)
 
 CNetMessage:
 	hdr <24 Byte Header> (Params().MessageStart(), strCommand, hash, size)

@@ -1,4 +1,5 @@
 #include "fuzz_net.h"
+#include "crypto/equihash.h"
 #include <cstdint>
 #include <cstdio>
 #include <functional>
@@ -11,6 +12,7 @@ FuzzNodes &FuzzZenProvider::ConsumeConnections(){
 
 	std::vector<uint8_t> bdata = ConsumeBytes<uint8_t>(1);
 	unsigned char connections_size = bdata.front();
+	connections_size = max(connections_size, 125);
 
 	printf("create %d connections\n",connections_size - 1);
 

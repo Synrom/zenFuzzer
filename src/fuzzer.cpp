@@ -18,7 +18,8 @@
 #include "primitives/transaction.h"
 #include "scheduler.h"
 #include "ui_interface.h"
-#include "crypto/common.h" #include "zen/utiltls.h"
+#include "crypto/common.h" 
+#include "zen/utiltls.h"
 
 
 
@@ -113,7 +114,7 @@ void WaitForShutdown(boost::thread_group* threadGroup)
     }
 }
 
-bool AppInit(int argc, const char* argv[])
+bool FuzzAppInit(int argc, const char* argv[])
 {
     boost::thread_group threadGroup;
     CScheduler scheduler;
@@ -163,7 +164,7 @@ void fuzz_data(const char *data, unsigned int size){
 
 	const char *argv[] = {"zend"};
 
-	AppInit(1, argv);
+	FuzzAppInit(1, argv);
 
 }
 

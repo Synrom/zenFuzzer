@@ -107,7 +107,7 @@ enum BindFlags {
 };
 
 static const char* FEE_ESTIMATES_FILENAME="fee_estimates.dat";
-CClientUIInterface uiInterface; // Declared but not defined in ui_interface.h
+CClientUIInterface uiInterface;
 
 //////////////////////////////////////////////////////////////////////////////
 //
@@ -296,13 +296,11 @@ void HandleSIGHUP(int)
 
 bool static InitError(const std::string &str)
 {
-    uiInterface.ThreadSafeMessageBox(str, "", CClientUIInterface::MSG_ERROR);
     return false;
 }
 
 bool static InitWarning(const std::string &str)
 {
-    uiInterface.ThreadSafeMessageBox(str, "", CClientUIInterface::MSG_WARNING);
     return true;
 }
 
@@ -2005,102 +2003,164 @@ bool AppInit2(boost::thread_group& threadGroup, CScheduler& scheduler)
 bool AppInitFuzzer(boost::thread_group& threadGroup, CScheduler& scheduler)
 {
 
+    if (!SetupNetworking())
+        return InitError("Error: Initializing networking failed");
 
     umask(077);
 
     // Clean shutdown on SIGTERM
-    /*
     struct sigaction sa;
     sa.sa_handler = HandleSIGTERM;
     sigemptyset(&sa.sa_mask);
     sa.sa_flags = 0;
     sigaction(SIGTERM, &sa, NULL);
     sigaction(SIGINT, &sa, NULL);
-    */
 
     // Reopen debug.log on SIGHUP
-    /*
     struct sigaction sa_hup;
     sa_hup.sa_handler = HandleSIGHUP;
     sigemptyset(&sa_hup.sa_mask);
     sa_hup.sa_flags = 0;
     sigaction(SIGHUP, &sa_hup, NULL);
-    */
 
     // Ignore SIGPIPE, otherwise it will bring the daemon down if the client closes unexpectedly
+    signal(SIGPIPE, SIG_IGN);
 
     // ********************************************************* Step 2: parameter interactions
     const CChainParams& chainparams = Params();
 
-    fExperimentalMode =  false;
+    // Set this early so that experimental features are correctly enabled/disabled
+    fExperimentalMode = false;
 
-    fPrintToConsole =  false;
-    fLogTimestamps =  true;
-    fLogTimeMicros =  false;
-    fLogIPs =  false;
+    printf("1\n");
 
-    mapArgs["-discover"] = false;
-    mapArgs["-listenonion"] = false;
+    // Set this early so that parameter interactions go to console
+    fPrintToConsole = GetBoolArg("-printtoconsole", false);
+    fLogTimestamps = GetBoolArg("-logtimestamps", true);
+    fLogTimeMicros = GetBoolArg("-logtimemicros", false);
+    fLogIPs = GetBoolArg("-logips", false);
+
+    printf("Horizen version %s (%s)\n", FormatFullVersion().c_str(), CLIENT_DATE.c_str());
+    unsigned int counter = 1;
+    printf("%u\n",counter);
+    counter++;
+
+    // when specifying an explicit binding address, you want to listen on it
+    // even when -connect or -proxy is specified
+
+    printf("since we dont do listening ignore listen\n");
 
 
-    int nBind = 1;
-    nMaxConnections = DEFAULT_MAX_PEER_CONNECTIONS;
+    // Make sure enough file descriptors are available
+    int nBind = std::max((int)mapArgs.count("-bind") + (int)mapArgs.count("-whitebind"), 1);
+    nMaxConnections = GetArg("-maxconnections", DEFAULT_MAX_PEER_CONNECTIONS);
     nMaxConnections = std::max(std::min(nMaxConnections, (int)(FD_SETSIZE - nBind - MIN_CORE_FILEDESCRIPTORS)), 0);
+    int nFD = RaiseFileDescriptorLimit(nMaxConnections + MIN_CORE_FILEDESCRIPTORS);
+    if (nFD < MIN_CORE_FILEDESCRIPTORS)
+        return InitError(_("Not enough file descriptors available."));
+    if (nFD - MIN_CORE_FILEDESCRIPTORS < nMaxConnections)
+        nMaxConnections = nFD - MIN_CORE_FILEDESCRIPTORS;
 
 
-    fDebug = false;
+    // ********************************************************* Step 3: parameter-to-internal-flags
+
+    fDebug = !mapMultiArgs["-debug"].empty();
+    // Special-case: if -debug=0/-nodebug is set, turn off debugging messages
+    const vector<string>& categories = mapMultiArgs["-debug"];
+    if (GetBoolArg("-nodebug", false) || find(categories.begin(), categories.end(), string("0")) != categories.end())
+        fDebug = false;
+
+    printf("%u\n",counter);
+    counter++;
+    // Special case: if debug=zrpcunsafe, implies debug=zrpc, so add it to debug categories
+    if (find(categories.begin(), categories.end(), string("zrpcunsafe")) != categories.end()) {
+        if (find(categories.begin(), categories.end(), string("zrpc")) == categories.end()) {
+            printf("%s: parameter interaction: setting -debug=zrpcunsafe -> -debug=zrpc\n", __func__);
+            vector<string>& v = mapMultiArgs["-debug"];
+            v.push_back("zrpc");
+        }
+    }
 
     // Checkmempool and checkblockindex default to true in regtest mode
-    mempool.setSanityCheck(chainparams.DefaultConsistencyChecks());
-    fCheckBlockIndex =  chainparams.DefaultConsistencyChecks();
-    fCheckpointsEnabled =  true;
+    mempool.setSanityCheck(GetBoolArg("-checkmempool", chainparams.DefaultConsistencyChecks()));
+    fCheckBlockIndex = GetBoolArg("-checkblockindex", chainparams.DefaultConsistencyChecks());
+    fCheckpointsEnabled = GetBoolArg("-checkpoints", true);
 
     // -par=0 means autodetect, but nScriptCheckThreads==0 means no concurrency
-    nScriptCheckThreads = 0;
+    nScriptCheckThreads = GetArg("-par", DEFAULT_SCRIPTCHECK_THREADS);
+    if (nScriptCheckThreads <= 0)
+        nScriptCheckThreads += GetNumCores();
+    if (nScriptCheckThreads <= 1)
+        nScriptCheckThreads = 0;
+    else if (nScriptCheckThreads > MAX_SCRIPTCHECK_THREADS)
+        nScriptCheckThreads = MAX_SCRIPTCHECK_THREADS;
 
-    fServer = false;
+    fServer = GetBoolArg("-server", false);
+    printf("after check\n");
+    fflush(stdout);
 
     // block pruning; get the amount of disk space (in MB) to allot for block & undo files
-    int64_t nSignedPruneTarget =  0 * 1024 * 1024;
+    int64_t nSignedPruneTarget = GetArg("-prune", 0) * 1024 * 1024;
     nPruneTarget = (uint64_t) nSignedPruneTarget;
+    if (nPruneTarget) {
+        if (nPruneTarget < MIN_DISK_SPACE_FOR_BLOCK_FILES) {
+            return InitError(strprintf(_("Prune configured below the minimum of %d MB.  Please use a higher number."), MIN_DISK_SPACE_FOR_BLOCK_FILES / 1024 / 1024));
+        }
+        printf("Prune configured to target %luMiB on disk for block and undo files.\n", nPruneTarget / 1024 / 1024);
+        fPruneMode = true;
+    }
 
 
-    bool fDisableWallet =  false;
 
-    nConnectTimeout = DEFAULT_CONNECT_TIMEOUT;
+    nConnectTimeout = GetArg("-timeout", DEFAULT_CONNECT_TIMEOUT);
+    if (nConnectTimeout <= 0)
+        nConnectTimeout = DEFAULT_CONNECT_TIMEOUT;
 
-    nTxConfirmTarget = DEFAULT_TX_CONFIRM_TARGET;
-    bSpendZeroConfChange = true;
-    fSendFreeTransactions = false;
+    // Fee-per-kilobyte amount considered the same as "free"
+    // If you are mining, be careful setting this:
+    // if you set it to zero then
+    // a transaction spammer can cheaply fill blocks using
+    // 1-satoshi-fee transactions. It should be set above the real
+    // cost to you of processing a transaction.
 
-    std::string strWalletFile = "wallet.dat";
 
-    fIsBareMultisigStd = true;
-    nMaxDatacarrierBytes = nMaxDatacarrierBytes;
+    fIsBareMultisigStd = GetBoolArg("-permitbaremultisig", true);
+    nMaxDatacarrierBytes = GetArg("-datacarriersize", nMaxDatacarrierBytes);
+    printf("%u\n",counter);
+    counter++;
+    fflush(stdout);
 
-    fAlerts = DEFAULT_ALERTS;
+    fAlerts = GetBoolArg("-alerts", DEFAULT_ALERTS);
 
     // Option to startup with mocktime set (used for regression testing):
     SetMockTime(GetArg("-mocktime", 0)); // SetMockTime(0) is a no-op
 
 
+    // ********************************************************* Step 4: application initialization: dir lock, daemonize, pidfile, debug log
 
     // Initialize libsodium
     if (init_and_check_sodium() == -1) {
         return false;
     }
+    printf("sodium\n");
 
     // Initialize elliptic curve code
     ECC_Start();
     globalVerifyHandle.reset(new ECCVerifyHandle());
+    printf("ecc\n");
 
     // Sanity check
     if (!InitSanityCheck())
         return InitError(_("Initialization sanity check failed. Zen is shutting down."));
+    printf("sanity\n");
 
-
+    // Make sure only a single Bitcoin process is using the data directory.
     boost::filesystem::path pathLockFile = GetDataDir() / ".lock";
+    FILE* file = fopen(pathLockFile.string().c_str(), "a"); // empty lock file; created if it doesn't exist.
+    if (file) fclose(file);
+    printf("file check\n");
 
+    // TODO we want more then one Zen instance. Maybe delete all interactions with filesystem?
     try {
         static boost::interprocess::file_lock lock(pathLockFile.string().c_str());
         if (!lock.try_lock())
@@ -2109,26 +2169,61 @@ bool AppInitFuzzer(boost::thread_group& threadGroup, CScheduler& scheduler)
     } catch(const boost::interprocess::interprocess_exception& e) {
         return InitError(strprintf(_("Cannot obtain a lock on data directory %s. Zen is probably already running.") + " %s.", GetDataDir().string(), e.what()));
     }
+    printf("real file check\n");
 
+    //TODO delete sidechain stuff
     // Initialize sidechains folder, hosting keys for sidechains validations
     if(!Sidechain::InitSidechainsFolder())
         return InitError(strprintf(_("Cannot create or access sidechains folder.")));
+    printf("Sidechain Folder\n");
 
     // Initialize DLog keys
     if(!Sidechain::InitDLogKeys())
         return InitError(strprintf(_("Cannot initialize DLog keys in sidechains folder.")));
+    printf("InitDLogKeys \n");
 
-    CreatePidFile(GetPidFile(), getpid());
+    fLimitDebugLogSize = GetBoolArg("-limitdebuglogsize", !fDebug);
 
-    fLimitDebugLogSize = true;
+    if (GetBoolArg("-shrinkdebugfile", !fDebug))
+        ShrinkDebugFile();
 
+    printf("Haelfte geschaft \n");
+    printf("Zen version %s (%s)\n", FormatFullVersion().c_str(), CLIENT_DATE.c_str());
+    printf("%u\n",counter);
+    counter++;
+
+    printf("Using OpenSSL version %s\n", SSLeay_version(SSLEAY_VERSION));
+    if (!fLogTimestamps)
+        printf("Startup time: %s\n", DateTimeStrFormat("%Y-%m-%d %H:%M:%S", GetTime()).c_str());
+    printf("Default data directory %s\n", GetDefaultDataDir().string().c_str());
+    printf("Using data directory %s\n", GetDataDir().string().c_str());
+    // This print might not be correct, since at this point the options in the the zen.conf have already been read, and if a custom datadir has
+    // ben specified, the config file would be erroneously printed to be there
+    //    printf("Using config file %s\n", GetConfigFile().string());
+    printf("Using at most %i connections (%i file descriptors available)\n", nMaxConnections, nFD);
     std::ostringstream strErrors;
 
+    printf("Using %u threads for script verification\n", nScriptCheckThreads);
+    if (nScriptCheckThreads) {
+        for (int i=0; i<nScriptCheckThreads-1; i++)
+            threadGroup.create_thread(&ThreadScriptCheck);
+    }
+
+    // Start the lightweight task scheduler thread
     CScheduler::Function serviceLoop = boost::bind(&CScheduler::serviceQueue, &scheduler);
     threadGroup.create_thread(boost::bind(&TraceThread<CScheduler::Function>, "scheduler", serviceLoop));
 
     // Count uptime
     MarkStartTime();
+
+    if ((chainparams.NetworkIDString() != "regtest") &&
+            GetBoolArg("-showmetrics", isatty(STDOUT_FILENO)) &&
+            !fPrintToConsole && !GetBoolArg("-daemon", false)) {
+        // Start the persistent metrics interface
+	//TODO just so I know UI
+        //ConnectMetricsScreen();
+        //threadGroup.create_thread(&ThreadShowMetricsScreen);
+    }
 
     // These must be disabled for now, they are buggy and we probably don't
     // want any of libsnark's profiling in production anyway.
@@ -2148,32 +2243,17 @@ bool AppInitFuzzer(boost::thread_group& threadGroup, CScheduler& scheduler)
      */
 
     int64_t nStart;
+    printf("%u\n",counter);
+    counter++;
 
-    // ********************************************************* Step 5: verify wallet database integrity
-#ifdef ENABLE_WALLET
-    if (!fDisableWallet) {
-
-        std::string warningString;
-        std::string errorString;
-
-        if (!CWallet::Verify(strWalletFile, warningString, errorString))
-            return false;
-
-        if (!warningString.empty())
-            InitWarning(warningString);
-        if (!errorString.empty())
-            return InitError(warningString);
-
-    } // (!fDisableWallet)
-#endif // ENABLE_WALLET
     // ********************************************************* Step 6: network initialization
 
     RegisterNodeSignals(GetNodeSignals());
 
-    bool proxyRandomize = true;
+    bool proxyRandomize = GetBoolArg("-proxyrandomize", true);
     // -proxy sets a proxy for all outgoing network traffic
     // -noproxy (or -proxy=0) as well as the empty string can be used to not set a proxy, this is the default
-    std::string proxyArg = "";
+    std::string proxyArg = GetArg("-proxy", "");
     SetLimited(NET_TOR);
 
     // -onion can be used to set only a proxy for .onion, or override normal proxy for .onion addresses
@@ -2182,9 +2262,9 @@ bool AppInitFuzzer(boost::thread_group& threadGroup, CScheduler& scheduler)
     std::string onionArg = GetArg("-onion", "");
 
     // see Step 2: parameter interactions for more information about these
-    fListen =  DEFAULT_LISTEN;
-    fDiscover = true;
-    fNameLookup = true;
+    fListen = GetBoolArg("-listen", DEFAULT_LISTEN);
+    fDiscover = GetBoolArg("-discover", true);
+    fNameLookup = GetBoolArg("-dns", true);
 
     bool fBound = false;
     if (fListen) {
@@ -2195,6 +2275,8 @@ bool AppInitFuzzer(boost::thread_group& threadGroup, CScheduler& scheduler)
         if (!fBound)
             return InitError(_("Failed to listen on any port. Use -listen=0 if you want this."));
     }
+
+
 
 #if ENABLE_ZMQ
     pzmqNotificationInterface = CZMQNotificationInterface::CreateWithArguments(mapArgs);
@@ -2218,13 +2300,15 @@ bool AppInitFuzzer(boost::thread_group& threadGroup, CScheduler& scheduler)
         RegisterValidationInterface(pAMQPNotificationInterface);
     }
 #endif
+    printf("%u\n",counter);
+    counter++;
 
     // ********************************************************* Step 7: load block chain
-    // TODO for Fuzzer
 
-    fReindex = false;
-    fReindexFast = false;
+    fReindex = GetBoolArg("-reindex", false);
+    fReindexFast = GetBoolArg("-reindexfast", false);
 
+    //TODO: find a way to delete this stuff (delete all filesystem interactions if you can
     // Upgrading to 0.8; hard-link the old blknnnn.dat files into /blocks/
     boost::filesystem::path blocksDir = GetDataDir() / "blocks";
     if (!boost::filesystem::exists(blocksDir))
@@ -2237,12 +2321,12 @@ bool AppInitFuzzer(boost::thread_group& threadGroup, CScheduler& scheduler)
             boost::filesystem::path dest = blocksDir / strprintf("blk%05u.dat", i-1);
             try {
                 boost::filesystem::create_hard_link(source, dest);
-                LogPrintf("Hardlinked %s -> %s\n", source.string(), dest.string());
+                printf("Hardlinked %s -> %s\n", source.string().c_str(), dest.string().c_str());
                 linked = true;
             } catch (const boost::filesystem::filesystem_error& e) {
                 // Note: hardlink creation failing is not a disaster, it just means
                 // blocks will get re-downloaded from peers.
-                LogPrintf("Error hardlinking blk%04u.dat: %s\n", i, e.what());
+                printf("Error hardlinking blk%04u.dat: %s\n", i, e.what());
                 break;
             }
         }
@@ -2261,15 +2345,17 @@ bool AppInitFuzzer(boost::thread_group& threadGroup, CScheduler& scheduler)
     dbCompression = GetBoolArg("-blocktreedbcompression", DEFAULT_DB_COMPRESSION);
 #endif // ENABLE_ADDRESS_INDEXING
 
-    LogPrintf("Block index database configuration:\n");
-    LogPrintf("* Using %d max open files\n", dbMaxOpenFiles);
-    LogPrintf("* Compression is %s\n", dbCompression ? "enabled" : "disabled");
+    printf("Block index database configuration:\n");
+    printf("* Using %d max open files\n", dbMaxOpenFiles);
+    printf("* Compression is %s\n", dbCompression ? "enabled" : "disabled");
 
     // cache size calculations
     int64_t nTotalCache = (GetArg("-dbcache", nDefaultDbCache) << 20);
     nTotalCache = std::max(nTotalCache, nMinDbCache << 20); // total cache cannot be less than nMinDbCache
     nTotalCache = std::min(nTotalCache, nMaxDbCache << 20); // total cache cannot be greated than nMaxDbcache
     int64_t nBlockTreeDBCache = nTotalCache / 8;
+    printf("%u\n",counter);
+    counter++;
 
 #ifdef ENABLE_ADDRESS_INDEXING
     if (GetBoolArg("-addressindex", DEFAULT_ADDRESSINDEX) || GetBoolArg("-spentindex", DEFAULT_SPENTINDEX)) {
@@ -2289,18 +2375,19 @@ bool AppInitFuzzer(boost::thread_group& threadGroup, CScheduler& scheduler)
     int64_t nCoinDBCache = std::min(nTotalCache / 2, (nTotalCache / 4) + (1 << 23)); // use 25%-50% of the remainder for disk cache
     nTotalCache -= nCoinDBCache;
     nCoinCacheUsage = nTotalCache; // the rest goes to in-memory cache
-    LogPrintf("Cache configuration:\n");
-    LogPrintf("* Max cache setting possible %.1fMiB\n", nMaxDbCache);
-    LogPrintf("* Using %.1fMiB for block index database\n", nBlockTreeDBCache * (1.0 / 1024 / 1024));
-    LogPrintf("* Using %.1fMiB for chain state database\n", nCoinDBCache * (1.0 / 1024 / 1024));
-    LogPrintf("* Using %.1fMiB for in-memory UTXO set\n", nCoinCacheUsage * (1.0 / 1024 / 1024));
+    printf("Cache configuration:\n");
+    printf("* Max cache setting possible %.1ldMiB\n", nMaxDbCache);
+    printf("* Using %.1fMiB for block index database\n", nBlockTreeDBCache * (1.0 / 1024 / 1024));
+    printf("* Using %.1fMiB for chain state database\n", nCoinDBCache * (1.0 / 1024 / 1024));
+    printf("* Using %.1fMiB for in-memory UTXO set\n", nCoinCacheUsage * (1.0 / 1024 / 1024));
+    printf("%u\n",counter);
+    counter++;
 
     bool fLoaded = false;
     while (!fLoaded) {
         bool fReset = fReindex || fReindexFast;
         std::string strLoadError;
 
-        uiInterface.InitMessage(_("Loading block index..."));
 
         nStart = GetTimeMillis();
         do {
@@ -2358,7 +2445,7 @@ bool AppInitFuzzer(boost::thread_group& threadGroup, CScheduler& scheduler)
                 // read the version of the txindexing related version
                 std::string indexVersionStr = DEFAULT_INDEX_VERSION_STR;
                 pblocktree->ReadString("indexVersion", indexVersionStr);
-                LogPrintf("%s: indexVersion %s\n", __func__, indexVersionStr);  
+                printf("%s: indexVersion %s\n", __func__, indexVersionStr.c_str());  
    
 #ifdef ENABLE_ADDRESS_INDEXING
                 // Check for changed -addressindex state
@@ -2386,7 +2473,7 @@ bool AppInitFuzzer(boost::thread_group& threadGroup, CScheduler& scheduler)
    
                     std::string dum;
                     pblocktree->ReadString("indexVersion", dum);
-                    LogPrintf("%s: indexVersion %s\n", __func__, dum);  
+                    printf("%s: indexVersion %s\n", __func__, dum.c_str());  
                 }
 
                 // Check that -txindex is enabled when -maturityheightindex is enabled
@@ -2402,9 +2489,8 @@ bool AppInitFuzzer(boost::thread_group& threadGroup, CScheduler& scheduler)
                     break;
                 }
 
-                uiInterface.InitMessage(_("Verifying blocks..."));
                 if (fHavePruned && GetArg("-checkblocks", 288) > MIN_BLOCKS_TO_KEEP) {
-                    LogPrintf("Prune: pruned datadir may not have more than %d blocks; -checkblocks=%d may fail\n",
+                    printf("Prune: pruned datadir may not have more than %d blocks; -checkblocks=%ld may fail\n",
                         MIN_BLOCKS_TO_KEEP, GetArg("-checkblocks", 288));
                 }
                 if (!CVerifyDB().VerifyDB(pcoinsdbview, GetArg("-checklevel", 3),
@@ -2413,7 +2499,7 @@ bool AppInitFuzzer(boost::thread_group& threadGroup, CScheduler& scheduler)
                     break;
                 }
             } catch (const std::exception& e) {
-                if (fDebug) LogPrintf("%s\n", e.what());
+                if (fDebug) printf("%s\n", e.what());
                 strLoadError = _("Error opening block database");
                 break;
             }
@@ -2424,17 +2510,6 @@ bool AppInitFuzzer(boost::thread_group& threadGroup, CScheduler& scheduler)
         if (!fLoaded) {
             // first suggest a reindex
             if (!fReset) {
-                bool fRet = uiInterface.ThreadSafeQuestion(
-                    strLoadError + ".\n\n" + _("Do you want to rebuild the block database now?"),
-                    strLoadError + ".\nPlease restart with -reindex to recover.",
-                    "", CClientUIInterface::MSG_ERROR | CClientUIInterface::BTN_ABORT);
-                if (fRet) {
-                    fReindex = true;
-                    fRequestShutdown = false;
-                } else {
-                    LogPrintf("Aborted block database rebuild. Exiting.\n");
-                    return false;
-                }
             } else {
                 return InitError(strLoadError);
             }
@@ -2446,10 +2521,10 @@ bool AppInitFuzzer(boost::thread_group& threadGroup, CScheduler& scheduler)
     // As the program has not fully started yet, Shutdown() is possibly overkill.
     if (fRequestShutdown)
     {
-        LogPrintf("Shutdown requested. Exiting.\n");
+        printf("Shutdown requested. Exiting.\n");
         return false;
     }
-    LogPrintf(" block index %15dms\n", GetTimeMillis() - nStart);
+    printf(" block index %15ldms\n", GetTimeMillis() - nStart);
 
     boost::filesystem::path est_path = GetDataDir() / FEE_ESTIMATES_FILENAME;
     CAutoFile est_filein(fopen(est_path.string().c_str(), "rb"), SER_DISK, CLIENT_VERSION);
@@ -2460,200 +2535,23 @@ bool AppInitFuzzer(boost::thread_group& threadGroup, CScheduler& scheduler)
 
 
     // ********************************************************* Step 8: load wallet
-#ifdef ENABLE_WALLET
-    if (fDisableWallet) {
-        pwalletMain = NULL;
-        LogPrintf("Wallet disabled!\n");
-    } else {
+    printf("No wallet support compiled in!\n");
 
-        // needed to restore wallet transaction meta data after -zapwallettxes
-        std::vector<std::shared_ptr<CWalletTransactionBase>> vWtx;
-
-        if (GetBoolArg("-zapwallettxes", false)) {
-            uiInterface.InitMessage(_("Zapping all transactions from wallet..."));
-
-            pwalletMain = new CWallet(strWalletFile);
-            DBErrors nZapWalletRet = pwalletMain->ZapWalletTx(vWtx);
-            if (nZapWalletRet != DB_LOAD_OK) {
-                uiInterface.InitMessage(_("Error loading wallet.dat: Wallet corrupted"));
-                return false;
-            }
-
-            delete pwalletMain;
-            pwalletMain = NULL;
-        }
-
-        uiInterface.InitMessage(_("Loading wallet..."));
-
-        nStart = GetTimeMillis();
-        bool fFirstRun = true;
-        pwalletMain = new CWallet(strWalletFile);
-        DBErrors nLoadWalletRet = pwalletMain->LoadWallet(fFirstRun);
-        if (nLoadWalletRet != DB_LOAD_OK)
-        {
-            if (nLoadWalletRet == DB_CORRUPT)
-                strErrors << _("Error loading wallet.dat: Wallet corrupted") << "\n";
-            else if (nLoadWalletRet == DB_NONCRITICAL_ERROR)
-            {
-                string msg(_("error reading wallet.dat! All keys read correctly, but transaction data"
-                             " or address book entries might be missing or incorrect."));
-
-                bool reindexing = false;
-                pblocktree->ReadReindexing(reindexing);
-                if (reindexing)
-                {
-                    msg = string(_("(Reindexing in progress...) ")) + msg;
-                }
-                InitWarning(msg);
-            }
-            else if (nLoadWalletRet == DB_TOO_NEW)
-                strErrors << _("Error loading wallet.dat: Wallet requires newer version of Horizen") << "\n";
-            else if (nLoadWalletRet == DB_NEED_REWRITE)
-            {
-                strErrors << _("Wallet needed to be rewritten: restart Horizen to complete") << "\n";
-                LogPrintf("%s", strErrors.str());
-                return InitError(strErrors.str());
-            }
-            else
-                strErrors << _("Error loading wallet.dat") << "\n";
-        }
-
-        if (GetBoolArg("-upgradewallet", fFirstRun))
-        {
-            int nMaxVersion = GetArg("-upgradewallet", 0);
-            if (nMaxVersion == 0) // the -upgradewallet without argument case
-            {
-                LogPrintf("Performing wallet upgrade to %i\n", FEATURE_LATEST);
-                nMaxVersion = CLIENT_VERSION;
-                pwalletMain->SetMinVersion(FEATURE_LATEST); // permanently upgrade the wallet immediately
-            }
-            else
-                LogPrintf("Allowing wallet upgrade up to %i\n", nMaxVersion);
-            if (nMaxVersion < pwalletMain->GetVersion())
-                strErrors << _("Cannot downgrade wallet") << "\n";
-            pwalletMain->SetMaxVersion(nMaxVersion);
-        }
-
-        if (fFirstRun)
-        {
-            // Create new keyUser and set as default key
-            CPubKey newDefaultKey;
-            if (pwalletMain->GetKeyFromPool(newDefaultKey)) {
-                pwalletMain->SetDefaultKey(newDefaultKey);
-                if (!pwalletMain->SetAddressBook(pwalletMain->vchDefaultKey.GetID(), "", "receive"))
-                    strErrors << _("Cannot write default address") << "\n";
-            }
-
-            pwalletMain->SetBestChain(chainActive.GetLocator());
-        }
-
-        LogPrintf("%s", strErrors.str());
-        LogPrintf(" wallet      %15dms\n", GetTimeMillis() - nStart);
-
-        RegisterValidationInterface(pwalletMain);
-
-        CBlockIndex *pindexRescan = chainActive.Tip();
-        if (GetBoolArg("-rescan", false))
-        {
-            pwalletMain->ClearNoteWitnessCache();
-            pindexRescan = chainActive.Genesis();
-        }
-        else
-        {
-            CWalletDB walletdb(strWalletFile);
-            CBlockLocator locator;
-            if (walletdb.ReadBestBlock(locator))
-                pindexRescan = FindForkInGlobalIndex(chainActive, locator);
-            else
-                pindexRescan = chainActive.Genesis();
-        }
-        if (chainActive.Tip() && chainActive.Tip() != pindexRescan)
-        {
-            uiInterface.InitMessage(_("Rescanning..."));
-            LogPrintf("Rescanning last %i blocks (from block %i)...\n", chainActive.Height() - pindexRescan->nHeight, pindexRescan->nHeight);
-            nStart = GetTimeMillis();
-            pwalletMain->ScanForWalletTransactions(pindexRescan, true);
-            LogPrintf(" rescan      %15dms\n", GetTimeMillis() - nStart);
-            pwalletMain->SetBestChain(chainActive.GetLocator());
-            nWalletDBUpdated++;
-
-            // Restore wallet transaction metadata after -zapwallettxes=1
-            if (GetBoolArg("-zapwallettxes", false) && GetArg("-zapwallettxes", "1") != "2")
-            {
-                CWalletDB walletdb(strWalletFile);
-
-                for(const auto& wtxOld: vWtx)
-                {
-                    uint256 hash = wtxOld->getTxBase()->GetHash();
-                    auto mi = pwalletMain->getMapWallet().find(hash);
-                    if (mi != pwalletMain->getMapWallet().end())
-                    {
-                        const auto* copyFrom = wtxOld.get();
-                        CWalletTransactionBase* copyTo = mi->second.get();
-                        copyTo->mapValue = copyFrom->mapValue;
-                        copyTo->vOrderForm = copyFrom->vOrderForm;
-                        copyTo->nTimeReceived = copyFrom->nTimeReceived;
-                        copyTo->nTimeSmart = copyFrom->nTimeSmart;
-                        copyTo->fFromMe = copyFrom->fFromMe;
-                        copyTo->strFromAccount = copyFrom->strFromAccount;
-                        copyTo->nOrderPos = copyFrom->nOrderPos;
-                        copyTo->WriteToDisk(&walletdb);
-                    }
-                }
-            }
-        }
-        pwalletMain->SetBroadcastTransactions(GetBoolArg("-walletbroadcast", true));
-    } // (!fDisableWallet)
-#else // ENABLE_WALLET
-    LogPrintf("No wallet support compiled in!\n");
-#endif // !ENABLE_WALLET
-
-#ifdef ENABLE_MINING
- #ifndef ENABLE_WALLET
-    if (GetBoolArg("-minetolocalwallet", false)) {
-        return InitError(_("Horizen was not built with wallet support. Set -minetolocalwallet=0 to use -mineraddress, or rebuild Horizen with wallet support."));
-    }
-    if (GetArg("-mineraddress", "").empty() && GetBoolArg("-gen", false)) {
-        return InitError(_("Horizen was not built with wallet support. Set -mineraddress, or rebuild Horizen with wallet support."));
-    }
- #endif // !ENABLE_WALLET
-
-    if (mapArgs.count("-mineraddress")) {
- #ifdef ENABLE_WALLET
-        bool minerAddressInLocalWallet = false;
-        if (pwalletMain) {
-            // Address has alreday been validated
-            CBitcoinAddress addr(mapArgs["-mineraddress"]);
-            CKeyID keyID;
-            addr.GetKeyID(keyID);
-            minerAddressInLocalWallet = pwalletMain->HaveKey(keyID);
-        }
-        if (GetBoolArg("-minetolocalwallet", true) && !minerAddressInLocalWallet) {
-            return InitError(_("-mineraddress is not in the local wallet. Either use a local address, or set -minetolocalwallet=0"));
-        }
- #endif // ENABLE_WALLET
-    }
-#endif // ENABLE_MINING
 
     // ********************************************************* Step 9: data directory maintenance
 
     // if pruning, unset the service bit and perform the initial blockstore prune
     // after any wallet rescanning has taken place.
     if (fPruneMode) {
-        LogPrintf("Unsetting NODE_NETWORK on prune mode\n");
+        printf("Unsetting NODE_NETWORK on prune mode\n");
         nLocalServices &= ~NODE_NETWORK;
         if (!(fReindex || fReindexFast)) {
-            uiInterface.InitMessage(_("Pruning blockstore..."));
             PruneAndFlush();
         }
     }
 
     // ********************************************************* Step 10: import blocks
 
-    if (mapArgs.count("-blocknotify"))
-        uiInterface.NotifyBlockTip.connect(BlockNotifyCallback);
-
-    uiInterface.InitMessage(_("Activating best chain..."));
     // scan for better chains in the block chain database, that are not yet connected in the active best chain
     CValidationState state;
     if (!ActivateBestChain(state))
@@ -2667,7 +2565,7 @@ bool AppInitFuzzer(boost::thread_group& threadGroup, CScheduler& scheduler)
     }
     threadGroup.create_thread(boost::bind(&ThreadImport, vImportFiles));
     if (chainActive.Tip() == NULL) {
-        LogPrintf("Waiting for genesis block to be imported...\n");
+        printf("Waiting for genesis block to be imported...\n");
         while (!fRequestShutdown && chainActive.Tip() == NULL)
             MilliSleep(10);
     }
@@ -2681,13 +2579,8 @@ bool AppInitFuzzer(boost::thread_group& threadGroup, CScheduler& scheduler)
         return InitError(strErrors.str());
 
     //// debug print
-    LogPrintf("mapBlockIndex.size() = %u\n",   mapBlockIndex.size());
-    LogPrintf("nBestHeight = %d\n",                   chainActive.Height());
-#ifdef ENABLE_WALLET
-    LogPrintf("setKeyPool.size() = %u\n",      pwalletMain ? pwalletMain->setKeyPool.size() : 0);
-    LogPrintf("mapWallet.size() = %u\n",       pwalletMain ? pwalletMain->getMapWallet().size() : 0);
-    LogPrintf("mapAddressBook.size() = %u\n",  pwalletMain ? pwalletMain->mapAddressBook.size() : 0);
-#endif
+    printf("mapBlockIndex.size() = %lu\n",   mapBlockIndex.size());
+    printf("nBestHeight = %d\n",                   chainActive.Height());
 
     // Start the thread that notifies listeners of transactions that have been
     // recently added to the mempool.
@@ -2695,7 +2588,8 @@ bool AppInitFuzzer(boost::thread_group& threadGroup, CScheduler& scheduler)
 
     if (GetBoolArg("-listenonion", DEFAULT_LISTEN_ONION))
         StartTorControl(threadGroup, scheduler);
-
+ 
+    // TODO the good stuff
     StartNode(threadGroup, scheduler);
 
     // Monitor the chain, and alert if we get blocks much quicker or slower than expected
@@ -2704,15 +2598,6 @@ bool AppInitFuzzer(boost::thread_group& threadGroup, CScheduler& scheduler)
                                          boost::ref(cs_main), boost::cref(pindexBestHeader), nPowTargetSpacing);
     scheduler.scheduleEvery(f, nPowTargetSpacing);
 
-#ifdef ENABLE_MINING
-    // Generate coins in the background
- #ifdef ENABLE_WALLET
-    if (pwalletMain || !GetArg("-mineraddress", "").empty())
-        GenerateBitcoins(GetBoolArg("-gen", false), pwalletMain, GetArg("-genproclimit", 1));
- #else
-    GenerateBitcoins(GetBoolArg("-gen", false), GetArg("-genproclimit", 1));
- #endif
-#endif
 
     if (Params().NetworkIDString() == "regtest")
     {
@@ -2722,17 +2607,7 @@ bool AppInitFuzzer(boost::thread_group& threadGroup, CScheduler& scheduler)
     // ********************************************************* Step 11: finished
 
     SetRPCWarmupFinished();
-    uiInterface.InitMessage(_("Done loading"));
 
-#ifdef ENABLE_WALLET
-    if (pwalletMain) {
-        // Add wallet transactions that aren't already in a block to mapTransactions
-        pwalletMain->ReacceptWalletTransactions();
-
-        // Run a thread to flush wallet periodically
-        threadGroup.create_thread(boost::bind(&ThreadFlushWalletDB, boost::ref(pwalletMain->strWalletFile)));
-    }
-#endif
 
     // SENDALERT
     threadGroup.create_thread(boost::bind(ThreadSendAlert));
