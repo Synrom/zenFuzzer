@@ -60,7 +60,7 @@ FuzzNode *FuzzNodes::getNode(){
 }
 
 bool FuzzNodes::is_established(){
-	if(tick <= Nodes.size())
+	if(tick < Nodes.size())
 		return false;
 	printf("FuzzNodes is established\n");
 	return true;
@@ -88,5 +88,26 @@ void FuzzNodes::unlock(){
 void FuzzNodes::addConnection(){
 	Nodes.emplace_back();
 }
+
+
+size_t FuzzNodes::sizeOpened(){
+	size_t count = 0;
+	for(auto node = Nodes.begin(); node != Nodes.end(); node++){
+		if(node->isOpen()){
+			count++;
+		}
+	}
+	return count;
+}
+
+bool FuzzNode::isOpen(){
+	return appfd != 0 && fuzzfd != 0;
+}
+
+size_t FuzzNodes::size(){
+	return Nodes.size();
+}
+
+
 
 

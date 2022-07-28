@@ -20,6 +20,7 @@ public:
 	}
 
 	int connect();
+	bool isOpen();
 private:
 	int fuzzfd{0},appfd{0};
 };
@@ -28,6 +29,7 @@ class FuzzNodes{
 public:
 	void addConnection();
 	size_t size();
+	size_t sizeOpened();
 	void lock();
 	void unlock();
 	FuzzNode *getNode();

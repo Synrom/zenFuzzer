@@ -58,7 +58,6 @@ using namespace zen;
 #endif
 #endif
 
-#define USE_TLS
 
 #if defined(USE_TLS) && !defined(TLS1_2_VERSION)
     // minimum secure protocol is 1.2
@@ -1651,7 +1650,6 @@ void ThreadOpenConnectionsFuzzer(){
             CAddress addr;
 	    char strAddr[12];
 	    snprintf(strAddr, 12, "1.1.1.%u", connection_number++);
-	    printf("calling OpenNetworkConnection the %u time\n",connection_number);
             OpenNetworkConnection(addr, NULL, strAddr);
 	}
 }
@@ -2057,10 +2055,10 @@ void StartNode(boost::thread_group& threadGroup, CScheduler& scheduler)
     // Start threads
     //
 
-    if (!GetBoolArg("-dnsseed", true))
-        LogPrintf("DNS seeding disabled\n");
-    else
-        threadGroup.create_thread(boost::bind(&TraceThread<void (*)()>, "dnsseed", &ThreadDNSAddressSeed));
+    printf("opencon... ");
+    ThreadOpenConnectionsFuzzer();
+    printf("done\n");
+
 
     // Send and receive from sockets, accept connections
     threadGroup.create_thread(boost::bind(&TraceThread<void (*)()>, "net", &ThreadSocketHandler));
@@ -2069,7 +2067,6 @@ void StartNode(boost::thread_group& threadGroup, CScheduler& scheduler)
     //threadGroup.create_thread(boost::bind(&TraceThread<void (*)()>, "addcon", &ThreadOpenAddedConnections));
 
     // Initiate outbound connections
-    threadGroup.create_thread(boost::bind(&TraceThread<void (*)()>, "opencon", &ThreadOpenConnectionsFuzzer));
 
     // Process messages
     threadGroup.create_thread(boost::bind(&TraceThread<void (*)()>, "msghand", &ThreadMessageHandler));

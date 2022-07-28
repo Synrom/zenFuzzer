@@ -1449,23 +1449,7 @@ bool AppInit2(boost::thread_group& threadGroup, CScheduler& scheduler)
     BOOST_FOREACH(const std::string& strDest, mapMultiArgs["-seednode"])
         AddOneShot(strDest);
 
-    if (mapArgs.count("-tlskeypath")) {
-        boost::filesystem::path pathTLSKey(GetArg("-tlskeypath", ""));
-    if (!boost::filesystem::exists(pathTLSKey))
-         return InitError(strprintf(_("Cannot find TLS key file: '%s'"), pathTLSKey.string()));
-    }
 
-    if (mapArgs.count("-tlscertpath")) {
-        boost::filesystem::path pathTLSCert(GetArg("-tlscertpath", ""));
-    if (!boost::filesystem::exists(pathTLSCert))
-        return InitError(strprintf(_("Cannot find TLS cert file: '%s'"), pathTLSCert.string()));
-    }
-
-    if (mapArgs.count("-tlstrustdir")) {
-        boost::filesystem::path pathTLSTrustredDir(GetArg("-tlstrustdir", ""));
-        if (!boost::filesystem::exists(pathTLSTrustredDir))
-            return InitError(strprintf(_("Cannot find trusted certificates directory: '%s'"), pathTLSTrustredDir.string()));
-    }
 
 #if ENABLE_ZMQ
     pzmqNotificationInterface = CZMQNotificationInterface::CreateWithArguments(mapArgs);
