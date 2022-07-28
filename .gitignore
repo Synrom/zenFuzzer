@@ -3,6 +3,7 @@ src/zen-cli
 src/zen-gtest
 src/zen-tx
 src/zend
+src/fuzzer
 
 *.tar.gz
 *.deb
@@ -13,6 +14,7 @@ src/zcash-cli
 src/zcash-gtest
 src/zcash-tx
 src/test/test_bitcoin
+.cache
 
 # Zcash utilities
 src/zcash/GenerateParams

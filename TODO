@@ -1,4 +1,5 @@
-AppInitFuzzer further (delete Sidechain stuff and all performance eater)
+calling OpenNetworkConnection only 2 time in ThreadConnectionOpenFuzzer
+Thread* überschreiben mit Funktionen, die nicht unendlich weitergehen
 
 CNetMessage:
 	hdr <24 Byte Header> (Params().MessageStart(), strCommand, hash, size)

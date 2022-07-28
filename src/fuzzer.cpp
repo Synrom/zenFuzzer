@@ -141,6 +141,16 @@ bool FuzzAppInit(int argc, const char* argv[])
         PrintExceptionContinue(NULL, "AppInit()");
     }
 
+    if(!fRet){
+	    printf("request for shutdown\n");
+    }else{
+	    printf("no request for shutdown\n");
+    }
+
+    WaitForShutdown(&threadGroup);
+
+    Shutdown();
+
     return fRet;
 
 
@@ -164,7 +174,7 @@ void fuzz_data(const char *data, unsigned int size){
 
 	const char *argv[] = {"zend"};
 
-	FuzzAppInit(1, argv);
+	int fRet = FuzzAppInit(1, argv);
 
 }
 

@@ -22,12 +22,14 @@
 #include <exception>
 #include <map>
 #include <stdint.h>
+#include <stdio.h>
 #include <string>
 #include <vector>
 
 #include <boost/filesystem/path.hpp>
 #include <boost/signals2/signal.hpp>
 #include <boost/thread/exceptions.hpp>
+
 
 static const bool DEFAULT_LOGTIMEMICROS = false;
 static const bool DEFAULT_LOGIPS        = false;
@@ -73,8 +75,7 @@ bool LogAcceptCategory(const char* category);
 /** Send a string to the log output */
 int LogPrintStr(const std::string &str);
 
-//#define LogPrintf(...) LogPrint(NULL, __VA_ARGS__)
-#define LogPrintf(...) 
+#define LogPrintf(...) LogPrint(NULL, __VA_ARGS__)
 
 /**
  * When we switch to C++11, this can be switched to variadic templates instead

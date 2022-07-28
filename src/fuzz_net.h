@@ -14,32 +14,27 @@
 
 class FuzzNode{
 public:
-	FuzzNode(unsigned short o): order_(o) {}
 	~FuzzNode(){
 		close(fuzzfd);
 		close(appfd);
-	}
-	bool operator == (unsigned short cmp){
-		return order() == cmp;
-	}
-	unsigned int order(){
-		return order_;
 	}
 
 	int connect();
 private:
 	int fuzzfd{0},appfd{0};
-	unsigned short order_{0};
 };
 
 class FuzzNodes{
 public:
-	void addConnection(unsigned short );
+	void addConnection();
 	size_t size();
 	void lock();
 	void unlock();
-	FuzzNode *getNode(unsigned short);
+	FuzzNode *getNode();
+	bool is_established();
+
 private:
+	unsigned short tick{0};
 	std::vector<FuzzNode> Nodes;
 	std::mutex mtx;
 };

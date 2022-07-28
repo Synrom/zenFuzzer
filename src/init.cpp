@@ -3,6 +3,7 @@
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
+#include <cstdlib>
 #if defined(HAVE_CONFIG_H)
 #include "config/bitcoin-config.h"
 #endif
@@ -213,7 +214,10 @@ void Shutdown()
 #endif
     StopNode();
     StopTorControl();
+    printf("stop tor\n");
     UnregisterNodeSignals(GetNodeSignals());
+    printf("unregister\n");
+
 
     if (fFeeEstimatesInitialized)
     {
@@ -225,6 +229,7 @@ void Shutdown()
             LogPrintf("%s: Failed to write fee estimates to %s\n", __func__, est_path.string());
         fFeeEstimatesInitialized = false;
     }
+    printf("if 1\n");
 
     {
         LOCK(cs_main);
@@ -240,9 +245,11 @@ void Shutdown()
         delete pblocktree;
         pblocktree = NULL;
     }
+    printf("block 1\n");
 #ifdef ENABLE_WALLET
     if (pwalletMain)
         pwalletMain->Flush(true);
+    printf("if 2\n");
 #endif
 
 #if ENABLE_ZMQ
@@ -251,6 +258,7 @@ void Shutdown()
         delete pzmqNotificationInterface;
         pzmqNotificationInterface = NULL;
     }
+    printf("if 3\n");
 #endif
 
 #if ENABLE_PROTON
@@ -259,6 +267,7 @@ void Shutdown()
         delete pAMQPNotificationInterface;
         pAMQPNotificationInterface = NULL;
     }
+    printf("if 4\n");
 #endif
 
 #ifndef WIN32
@@ -267,8 +276,10 @@ void Shutdown()
     } catch (const boost::filesystem::filesystem_error& e) {
         LogPrintf("%s: Unable to remove pidfile: %s\n", __func__, e.what());
     }
+    printf("if 5\n");
 #endif
     UnregisterAllValidationInterfaces();
+    printf("Validation interface\n");
 #ifdef ENABLE_WALLET
     delete pwalletMain;
     pwalletMain = NULL;
@@ -276,8 +287,11 @@ void Shutdown()
     delete pzcashParams;
     pzcashParams = NULL;
     globalVerifyHandle.reset();
+    printf("global verify\n");
     ECC_Stop();
+    printf("ECC\n");
     CNode::NetCleanup();
+    printf("Code:NetCleanup\n");
     LogPrintf("%s: done\n", __func__);
 }
 
@@ -287,6 +301,9 @@ void Shutdown()
 void HandleSIGTERM(int)
 {
     fRequestShutdown = true;
+    printf("shutdown\n");
+    //Shutdown();
+    exit(0);
 }
 
 void HandleSIGHUP(int)
@@ -780,6 +797,7 @@ bool InitSanityCheck(void)
 {
     if(!ECC_InitSanityCheck()) {
         InitError("Elliptic curve cryptography sanity check failure. Aborting.");
+	printf("sanity checks faile\n");
         return false;
     }
     if (!glibc_sanity_test() || !glibcxx_sanity_test())
@@ -2009,22 +2027,25 @@ bool AppInitFuzzer(boost::thread_group& threadGroup, CScheduler& scheduler)
     umask(077);
 
     // Clean shutdown on SIGTERM
+    
     struct sigaction sa;
     sa.sa_handler = HandleSIGTERM;
     sigemptyset(&sa.sa_mask);
     sa.sa_flags = 0;
     sigaction(SIGTERM, &sa, NULL);
     sigaction(SIGINT, &sa, NULL);
+    
 
     // Reopen debug.log on SIGHUP
+    
     struct sigaction sa_hup;
     sa_hup.sa_handler = HandleSIGHUP;
     sigemptyset(&sa_hup.sa_mask);
     sa_hup.sa_flags = 0;
     sigaction(SIGHUP, &sa_hup, NULL);
+    
 
     // Ignore SIGPIPE, otherwise it will bring the daemon down if the client closes unexpectedly
-    signal(SIGPIPE, SIG_IGN);
 
     // ********************************************************* Step 2: parameter interactions
     const CChainParams& chainparams = Params();
@@ -2035,7 +2056,7 @@ bool AppInitFuzzer(boost::thread_group& threadGroup, CScheduler& scheduler)
     printf("1\n");
 
     // Set this early so that parameter interactions go to console
-    fPrintToConsole = GetBoolArg("-printtoconsole", false);
+    fPrintToConsole = true;
     fLogTimestamps = GetBoolArg("-logtimestamps", true);
     fLogTimeMicros = GetBoolArg("-logtimemicros", false);
     fLogIPs = GetBoolArg("-logips", false);
@@ -2094,6 +2115,8 @@ bool AppInitFuzzer(boost::thread_group& threadGroup, CScheduler& scheduler)
         nScriptCheckThreads = 0;
     else if (nScriptCheckThreads > MAX_SCRIPTCHECK_THREADS)
         nScriptCheckThreads = MAX_SCRIPTCHECK_THREADS;
+
+    nScriptCheckThreads = 0;
 
     fServer = GetBoolArg("-server", false);
     printf("after check\n");
@@ -2160,13 +2183,17 @@ bool AppInitFuzzer(boost::thread_group& threadGroup, CScheduler& scheduler)
     if (file) fclose(file);
     printf("file check\n");
 
+    printf("data directory = %s\n", GetDataDir().string().c_str());
     // TODO we want more then one Zen instance. Maybe delete all interactions with filesystem?
     try {
         static boost::interprocess::file_lock lock(pathLockFile.string().c_str());
-        if (!lock.try_lock())
+        if (!lock.try_lock()){
+		printf("lock error\n");
             return InitError(strprintf(_("Cannot obtain a lock on data directory %s. Zen is probably already running."), GetDataDir().string()));
+	}
 
     } catch(const boost::interprocess::interprocess_exception& e) {
+	    printf("interprocess error\n");
         return InitError(strprintf(_("Cannot obtain a lock on data directory %s. Zen is probably already running.") + " %s.", GetDataDir().string(), e.what()));
     }
     printf("real file check\n");
@@ -2178,8 +2205,10 @@ bool AppInitFuzzer(boost::thread_group& threadGroup, CScheduler& scheduler)
     printf("Sidechain Folder\n");
 
     // Initialize DLog keys
+
     if(!Sidechain::InitDLogKeys())
         return InitError(strprintf(_("Cannot initialize DLog keys in sidechains folder.")));
+    
     printf("InitDLogKeys \n");
 
     fLimitDebugLogSize = GetBoolArg("-limitdebuglogsize", !fDebug);
@@ -2620,5 +2649,6 @@ bool AppInitFuzzer(boost::thread_group& threadGroup, CScheduler& scheduler)
             )
     );
 
+    printf("end of AppInitFuzzer\n");
     return !fRequestShutdown;
 }

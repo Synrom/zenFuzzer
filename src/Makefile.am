@@ -97,15 +97,15 @@ bin_PROGRAMS =
 noinst_PROGRAMS =
 TESTS =
 
-if BUILD_BITCOIND
-  bin_PROGRAMS += zend
-endif
+#if BUILD_BITCOIND
+#  bin_PROGRAMS += zend
+#endif
 
 bin_PROGRAMS = fuzzer
 
-if BUILD_BITCOIN_UTILS
-  bin_PROGRAMS += zen-cli zen-tx
-endif
+#if BUILD_BITCOIN_UTILS
+#  bin_PROGRAMS += zen-cli zen-tx
+#endif
 
 LIBZCASH_H = \
   zcash/IncrementalMerkleTree.hpp \

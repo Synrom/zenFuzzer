@@ -3,6 +3,8 @@
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
+#include <cstdio>
+#include <string>
 #if defined(HAVE_CONFIG_H)
 #include "config/bitcoin-config.h"
 #endif
@@ -17,6 +19,7 @@
 #include "ui_interface.h"
 #include "crypto/common.h"
 #include "zen/utiltls.h"
+#include "fuzz_net.h"
 
 
 
@@ -1641,6 +1644,18 @@ void ThreadOpenConnections()
     }
 }
 
+void ThreadOpenConnectionsFuzzer(){
+	unsigned short connection_number{1};
+	while(!globalFuzzNodes.is_established()){
+            ProcessOneShot();
+            CAddress addr;
+	    char strAddr[12];
+	    snprintf(strAddr, 12, "1.1.1.%u", connection_number++);
+	    printf("calling OpenNetworkConnection the %u time\n",connection_number);
+            OpenNetworkConnection(addr, NULL, strAddr);
+	}
+}
+
 void ThreadOpenAddedConnections()
 {
     {
@@ -2051,10 +2066,10 @@ void StartNode(boost::thread_group& threadGroup, CScheduler& scheduler)
     threadGroup.create_thread(boost::bind(&TraceThread<void (*)()>, "net", &ThreadSocketHandler));
 
     // Initiate outbound connections from -addnode
-    threadGroup.create_thread(boost::bind(&TraceThread<void (*)()>, "addcon", &ThreadOpenAddedConnections));
+    //threadGroup.create_thread(boost::bind(&TraceThread<void (*)()>, "addcon", &ThreadOpenAddedConnections));
 
     // Initiate outbound connections
-    threadGroup.create_thread(boost::bind(&TraceThread<void (*)()>, "opencon", &ThreadOpenConnections));
+    threadGroup.create_thread(boost::bind(&TraceThread<void (*)()>, "opencon", &ThreadOpenConnectionsFuzzer));
 
     // Process messages
     threadGroup.create_thread(boost::bind(&TraceThread<void (*)()>, "msghand", &ThreadMessageHandler));

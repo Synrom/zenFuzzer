@@ -606,32 +606,28 @@ static bool ConnectThroughProxy(const proxyType &proxy, const std::string& strDe
     return true;
 }
 
-unsigned short fuzz_connection_tick{0};
 
 bool ConnectFuzzer(SOCKET &hSocketRet){
 
-    printf("App is at Connection Tick %d\n",fuzz_connection_tick);
 
     globalFuzzNodes.lock();
 
-    FuzzNode *node = globalFuzzNodes.getNode(fuzz_connection_tick);
+    FuzzNode *node = globalFuzzNodes.getNode();
 
     if(!node){
 
 	    hSocketRet = 0;
 	    globalFuzzNodes.unlock();
-    	    fuzz_connection_tick++;
 	    return false;
 
     }
 
     int sockfd = node->connect();
     hSocketRet = sockfd;
-    printf("add connection %d at tick %d\n",sockfd,fuzz_connection_tick);
+    printf("add connection socket %d\n",sockfd);
     
     globalFuzzNodes.unlock();
 
-    fuzz_connection_tick++;
     return sockfd;
 
 

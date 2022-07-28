@@ -20,11 +20,7 @@ FuzzNodes &FuzzZenProvider::ConsumeConnections(){
 
 	for(unsigned char i = 0;i <= connections_size;i++){
 
-		bdata = ConsumeBytes<uint8_t>(1);
-		unsigned char position = bdata.front();
-
-		printf("add connection at tick %d\n",position);
-		globalFuzzNodes.addConnection(position);
+		globalFuzzNodes.addConnection();
 
 	}
 
@@ -46,20 +42,28 @@ int FuzzNode::connect(){
 
 	fuzzfd = sockets[0];
 	appfd = sockets[1];
+	
+	printf("connected AF Socket with %d (for fuzz) and %d (for app)\n",
+			fuzzfd, appfd);
 
 	return appfd;
 
 }
 
-FuzzNode *FuzzNodes::getNode(unsigned short tick){
+FuzzNode *FuzzNodes::getNode(){
 	
-	for(auto node = Nodes.begin(); node != Nodes.end(); node++){
-		if(*node == tick)
-			return &(*node);
-	}
+	if(tick >= Nodes.size())
+		return NULL;
 
-	return NULL;
+	return &Nodes.at(tick++);
 
+}
+
+bool FuzzNodes::is_established(){
+	if(tick <= Nodes.size())
+		return false;
+	printf("FuzzNodes is established\n");
+	return true;
 }
 
 unsigned short FuzzZenProvider::ConsumeShort(){
@@ -81,8 +85,8 @@ void FuzzNodes::unlock(){
 	mtx.unlock();
 }
 
-void FuzzNodes::addConnection(unsigned short p){
-	Nodes.emplace_back(p);
+void FuzzNodes::addConnection(){
+	Nodes.emplace_back();
 }
 
 
