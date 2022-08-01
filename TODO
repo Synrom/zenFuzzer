@@ -1,6 +1,8 @@
-calling OpenNetworkConnection only 2 time in ThreadConnectionOpenFuzzer
+AppInitFuzzer schneller machen! -> afl-unicorn maybe (fds selbst programmieren etc.)
 Thread* überschreiben mit Funktionen, die nicht unendlich weitergehen
 
 CNetMessage:
 	hdr <24 Byte Header> (Params().MessageStart(), strCommand, hash, size)
 	vRecv <the data>
+
+-> erst Dictonary benutzen und dann processMessage reverse engineering
